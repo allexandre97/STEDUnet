@@ -1,0 +1,7 @@
+name: fibras-kb
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pyyaml=6
+  - pytest=8

@@ -1,0 +1,417 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.invalid/fibras/knowledge_base.schema.json",
+  "title": "Fibras literature paper card",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cite_key",
+    "bibliography",
+    "provenance",
+    "scope",
+    "method",
+    "evaluation",
+    "paper_findings",
+    "agent_assessment",
+    "comparison_summary",
+    "missing_field_checks",
+    "field_evidence",
+    "evidence_spans"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.2.0"},
+    "cite_key": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$"},
+    "bibliography": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "publication_year", "doi", "corpus_role", "study_type", "method_paradigms", "publication_status"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "publication_year": {"type": "integer", "minimum": 1900},
+        "doi": {"type": "string", "minLength": 1},
+        "corpus_role": {"const": "core"},
+        "study_type": {"enum": ["primary_research", "review"]},
+        "method_paradigms": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["deep_learning", "classical", "composite", "not_applicable"]}
+        },
+        "publication_status": {"enum": ["published", "preprint"]}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_pdf",
+        "source_sha256",
+        "extracted_on",
+        "extractor",
+        "extraction_status",
+        "reviewed_on",
+        "reviewer",
+        "review_scope",
+        "review_notes"
+      ],
+      "properties": {
+        "source_pdf": {"type": "string", "pattern": "\\.pdf$"},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "extracted_on": {
+          "oneOf": [
+            {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+            {"const": "not_recorded"}
+          ]
+        },
+        "extractor": {"type": "string", "minLength": 1},
+        "extraction_status": {"enum": ["draft", "reviewed", "verified"]},
+        "reviewed_on": {"type": "string", "format": "date"},
+        "reviewer": {"type": "string", "minLength": 1},
+        "review_scope": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["methods", "figures", "tables", "results", "appendices_or_supplements", "limitations"]
+          }
+        },
+        "review_notes": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "imaging_modalities", "dimensionality", "task_levels"],
+      "properties": {
+        "domain": {"$ref": "#/$defs/normalized_item"},
+        "imaging_modalities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/normalized_item"}
+        },
+        "dimensionality": {"$ref": "#/$defs/evidenced_value"},
+        "task_levels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/normalized_item"}
+        }
+      }
+    },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "architecture",
+        "inputs",
+        "outputs",
+        "losses",
+        "training",
+        "data",
+        "postprocessing"
+      ],
+      "properties": {
+        "summary": {"$ref": "#/$defs/statement"},
+        "architecture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["family", "name", "details", "claim_class", "evidence_ids"],
+          "properties": {
+            "family": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["normalized", "raw_value"],
+              "properties": {
+                "normalized": {"$ref": "#/$defs/architecture_family"},
+                "raw_value": {"type": "string", "minLength": 1}
+              }
+            },
+            "name": {"type": "string", "minLength": 1},
+            "details": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
+            "claim_class": {"$ref": "#/$defs/claim_class"},
+            "evidence_ids": {"$ref": "#/$defs/evidence_ids"}
+          }
+        },
+        "inputs": {"$ref": "#/$defs/facts_or_missing"},
+        "outputs": {"type": "array", "items": {"$ref": "#/$defs/normalized_item"}},
+        "losses": {"$ref": "#/$defs/facts_or_missing"},
+        "training": {"$ref": "#/$defs/facts_or_missing"},
+        "data": {"$ref": "#/$defs/facts_or_missing"},
+        "postprocessing": {"$ref": "#/$defs/facts_or_missing"}
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metrics", "validation_design", "reported_results"],
+      "properties": {
+        "metrics": {"$ref": "#/$defs/facts_or_missing"},
+        "validation_design": {"$ref": "#/$defs/statement_or_missing"},
+        "reported_results": {"type": "array", "items": {"$ref": "#/$defs/statement"}}
+      }
+    },
+    "paper_findings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claimed_contributions", "author_stated_limitations", "other_reported_findings"],
+      "properties": {
+        "claimed_contributions": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
+        "author_stated_limitations": {"type": "array", "items": {"$ref": "#/$defs/statement"}},
+        "other_reported_findings": {"type": "array", "items": {"$ref": "#/$defs/statement"}}
+      }
+    },
+    "agent_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["main_strength", "main_limitation", "best_use_case", "transfer_to_sted"],
+      "properties": {
+        "main_strength": {"$ref": "#/$defs/inference"},
+        "main_limitation": {"$ref": "#/$defs/inference"},
+        "best_use_case": {"$ref": "#/$defs/inference"},
+        "transfer_to_sted": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["judgment", "rationale", "claim_class", "evidence_ids", "assumptions", "risks"],
+          "properties": {
+            "judgment": {"enum": ["high", "medium", "low", "uncertain"]},
+            "rationale": {"type": "string", "minLength": 1},
+            "claim_class": {"const": "agent_inference"},
+            "evidence_ids": {"$ref": "#/$defs/evidence_ids"},
+            "assumptions": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "risks": {"type": "array", "items": {"type": "string", "minLength": 1}}
+          }
+        }
+      }
+    },
+    "comparison_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_focus",
+        "architecture_family",
+        "dimensionality",
+        "main_targets",
+        "losses",
+        "data_strategy",
+        "postprocessing",
+        "evaluation_focus",
+        "direct_sted_evidence",
+        "best_use_case",
+        "main_transfer_risk"
+      ],
+      "properties": {
+        "task_focus": {"type": "string", "minLength": 1},
+        "architecture_family": {"$ref": "#/$defs/architecture_family"},
+        "dimensionality": {"enum": ["2D", "2.5D", "3D", "mixed", "not_reported"]},
+        "main_targets": {"$ref": "#/$defs/string_array"},
+        "losses": {"$ref": "#/$defs/string_array"},
+        "data_strategy": {"$ref": "#/$defs/string_array"},
+        "postprocessing": {"$ref": "#/$defs/string_array"},
+        "evaluation_focus": {"$ref": "#/$defs/string_array"},
+        "direct_sted_evidence": {"enum": ["yes", "no", "uncertain"]},
+        "best_use_case": {"type": "string", "minLength": 1},
+        "main_transfer_risk": {"type": "string", "minLength": 1}
+      }
+    },
+    "missing_field_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "checked_locations"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "checked_locations": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "field_evidence": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/evidence_ids"}
+    },
+    "evidence_spans": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/evidence_span"}
+    }
+  },
+  "$defs": {
+    "claim_class": {
+      "enum": [
+        "paper_claim",
+        "reported_method",
+        "reported_result",
+        "author_stated_limitation",
+        "review_synthesis",
+        "agent_inference"
+      ]
+    },
+    "evidence_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*-E[0-9]{3}$"}
+    },
+    "string_array": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "architecture_family": {
+      "enum": [
+        "unet",
+        "stacked_unet",
+        "fcn",
+        "resnet_detector",
+        "orientation_aware_parallel_network",
+        "classical_active_contour",
+        "classical_topology_workflow",
+        "review",
+        "other",
+        "not_reported",
+        "not_applicable"
+      ]
+    },
+    "normalized_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["normalized", "raw_value", "claim_class", "evidence_ids"],
+      "properties": {
+        "normalized": {"type": "string", "minLength": 1},
+        "raw_value": {"type": "string", "minLength": 1},
+        "claim_class": {"$ref": "#/$defs/claim_class"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_ids"}
+      }
+    },
+    "evidenced_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "claim_class", "evidence_ids"],
+      "properties": {
+        "value": {},
+        "claim_class": {"$ref": "#/$defs/claim_class"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_ids"}
+      }
+    },
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "claim_class", "evidence_ids", "confidence"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "claim_class": {"$ref": "#/$defs/claim_class"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_ids"},
+        "confidence": {"enum": ["high", "medium", "low"]}
+      }
+    },
+    "statement_or_missing": {
+      "oneOf": [
+        {"$ref": "#/$defs/statement"},
+        {"enum": ["not_reported", "unknown", "not_applicable"]}
+      ]
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "value", "claim_class", "evidence_ids"],
+      "properties": {
+        "field": {"type": "string", "minLength": 1},
+        "value": {},
+        "claim_class": {"$ref": "#/$defs/claim_class"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_ids"}
+      }
+    },
+    "facts_or_missing": {
+      "oneOf": [
+        {"type": "array", "items": {"$ref": "#/$defs/fact"}},
+        {"enum": ["not_reported", "unknown", "not_applicable"]}
+      ]
+    },
+    "inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "claim_class", "evidence_ids"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "claim_class": {"const": "agent_inference"},
+        "evidence_ids": {"$ref": "#/$defs/evidence_ids"}
+      }
+    },
+    "evidence_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "source_pdf",
+        "page_pdf",
+        "page_printed",
+        "section",
+        "figure_or_table",
+        "locator",
+        "evidence_type",
+        "text",
+        "claim_class",
+        "supports_fields",
+        "confidence",
+        "notes"
+      ],
+      "properties": {
+        "evidence_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*-E[0-9]{3}$"},
+        "source_pdf": {"type": "string", "pattern": "\\.pdf$"},
+        "page_pdf": {"type": "integer", "minimum": 1},
+        "page_printed": {"type": ["integer", "string", "null"]},
+        "section": {"type": "string", "minLength": 1},
+        "figure_or_table": {"type": ["string", "null"]},
+        "locator": {"type": "string", "minLength": 1},
+        "evidence_type": {
+          "enum": ["direct_quote", "close_paraphrase", "figure_reading", "table_reading", "equation_reading"]
+        },
+        "text": {"type": "string", "minLength": 1},
+        "claim_class": {"$ref": "#/$defs/claim_class"},
+        "supports_fields": {"$ref": "#/$defs/string_array"},
+        "confidence": {"enum": ["high", "medium", "low"]},
+        "notes": {"type": "string", "minLength": 1}
+      }
+    },
+    "synthesis_claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "section",
+        "title",
+        "claim",
+        "claim_class",
+        "supporting_evidence_ids",
+        "limiting_evidence_ids",
+        "supporting_papers",
+        "limiting_papers",
+        "confidence",
+        "sted_implication"
+      ],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^(F|Q|H|L)[0-9]{2}$"},
+        "section": {"enum": ["finding", "question", "hypothesis", "limitation"]},
+        "title": {"type": "string", "minLength": 1},
+        "claim": {"type": "string", "minLength": 1},
+        "claim_class": {"enum": ["review_synthesis", "agent_inference"]},
+        "supporting_evidence_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+        "limiting_evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "supporting_papers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+        "limiting_papers": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "confidence": {"enum": ["high", "medium", "low"]},
+        "sted_implication": {"type": "string", "minLength": 1},
+        "question_number": {"type": "integer", "minimum": 1, "maximum": 10},
+        "hypothesis_id": {"type": "string", "pattern": "^H[1-7]$"},
+        "hypothesis_status": {
+          "enum": ["supported", "partially_supported", "contradicted", "insufficient_evidence"]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,109 @@
+schema_version: "1.2.0"
+corpus_name: sted_fiber_segmentation
+validation_date: "2026-06-18"
+papers:
+  - cite_key: Liu18
+    corpus_role: core
+    filename: Liu18.pdf
+    title: Densely Connected Stacked U-network for Filament Segmentation in Microscopy Images
+    publication_year: 2019
+    doi: 10.1007/978-3-030-11024-6_30
+    study_type: primary_research
+    method_paradigms: [deep_learning]
+    publication_status: published
+    source_version: publisher_pdf
+    pages: 9
+    sha256: c0c2bfb54e9f9eec9a79757c3c5ad72b0166c6e350277136517e45697e4b300a
+
+  - cite_key: Shi20b
+    corpus_role: core
+    filename: Shi20b.pdf
+    title: clDice - a Novel Topology-Preserving Loss Function for Tubular Structure Segmentation
+    publication_year: 2021
+    doi: 10.1109/CVPR46437.2021.01629
+    arxiv: "2003.07311"
+    study_type: primary_research
+    method_paradigms: [deep_learning]
+    publication_status: published
+    source_version: arxiv_v7_2022
+    pages: 17
+    sha256: 2e952692e01cb534b8851712e27846ab5d0dc06dfd170c9c64daf4e70d7f3170
+
+  - cite_key: Tet18
+    corpus_role: core
+    filename: Tet18.pdf
+    title: "DeepVesselNet: Vessel Segmentation, Centerline Prediction, and Bifurcation Detection in 3-D Angiographic Volumes"
+    publication_year: 2020
+    doi: 10.3389/fnins.2020.592352
+    study_type: primary_research
+    method_paradigms: [deep_learning]
+    publication_status: published
+    source_version: publisher_pdf
+    pages: 17
+    sha256: 1e1c4eb2ffb0b4e17130c417463eba22af1f312ff1eafe8b5537290b882c6607
+
+  - cite_key: Liu20
+    corpus_role: core
+    filename: Liu20.pdf
+    title: Quantifying Actin Filaments in Microscopic Images Using Keypoint Detection Techniques and a Fast Marching Algorithm
+    publication_year: 2020
+    doi: 10.1109/ICIP40778.2020.9191337
+    study_type: primary_research
+    method_paradigms: [deep_learning, composite]
+    publication_status: published
+    source_version: author_manuscript
+    pages: 14
+    sha256: bd5642d9e200725b68382d716dbf193c6cddf5de354006702e9cf05d33c6d683
+
+  - cite_key: Liu19
+    corpus_role: core
+    filename: Liu19.pdf
+    title: "Intersection to Overpass: Instance Segmentation on Filamentous Structures With an Orientation-Aware Neural Network and Terminus Pairing Algorithm"
+    publication_year: 2019
+    doi: 10.1109/CVPRW.2019.00021
+    study_type: primary_research
+    method_paradigms: [deep_learning, composite]
+    publication_status: published
+    source_version: author_manuscript
+    pages: 24
+    sha256: 9e958916e725212b130173b98588f20f742ccbeb358e19390be4907cb2b2c67a
+
+  - cite_key: Xu15
+    corpus_role: core
+    filename: Xu15.pdf
+    title: "SOAX: A software for quantification of 3D biopolymer networks"
+    publication_year: 2015
+    doi: 10.1038/srep09081
+    study_type: primary_research
+    method_paradigms: [classical]
+    publication_status: published
+    source_version: publisher_pdf
+    pages: 10
+    sha256: fa2ba6561f02ad8fc4f309dc30b3ed928af074364ea55fd96555de1f93fc6d49
+
+  - cite_key: Ozd21
+    corpus_role: core
+    filename: Ozd21.pdf
+    title: "Automated and semi-automated enhancement, segmentation and tracing of cytoskeletal networks in microscopic images: A review"
+    publication_year: 2021
+    doi: 10.1016/j.csbj.2021.04.019
+    study_type: review
+    method_paradigms: [not_applicable]
+    publication_status: published
+    source_version: publisher_pdf
+    pages: 15
+    sha256: 56e711a130426e9de2f0945dd5a46438c69e0979f3e6c398118908f0ee7103bc
+
+  - cite_key: Togo26
+    corpus_role: core
+    filename: Togo26.pdf
+    title: ToFiE, a Topology-aware Fiber Extraction workflow for 3D reconstruction of dense and heterogeneous biological fiber networks from microscopy images
+    publication_year: 2026
+    doi: not_reported
+    arxiv: "2604.18230"
+    study_type: primary_research
+    method_paradigms: [classical, composite]
+    publication_status: preprint
+    source_version: arxiv_v1_2026-04-20
+    pages: 29
+    sha256: 79ed5da5189f88df87d75619efe167279392119e09e248aea2492cbb1e0a1803
