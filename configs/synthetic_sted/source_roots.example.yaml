@@ -1,0 +1,4 @@
+source_roots:
+  sted_fiber_data: /ssd/STED_dataset/data
+  sted_blank_data: /ssd/STED_dataset/bigblank
+

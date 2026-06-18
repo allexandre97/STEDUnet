@@ -1,0 +1,27 @@
+dataset_name: synthetic_sted_mvp
+sample_count: 8
+split: training
+calibration_status: procedural_unmatched
+geometry:
+  image_shape: [1024, 1024]
+  base_seed: 21001
+  fiber_count_range: [7, 10]
+  points_per_fiber: 96
+  fiber_radius_px: 2.2
+  fiber_intensity: 115.0
+  include_crossings: true
+  include_true_junctions: true
+  include_truncated: true
+targets:
+  centerline_radius_px: 0.75
+  endpoint_radius_px: 3.0
+  junction_radius_px: 3.0
+  crossing_radius_px: 3.0
+rendering:
+  base_seed: 22001
+  background_level: 4.0
+  background_noise_std: 0.0
+  psf_sigma_px: 0.0
+  uint8_min: 0.0
+  uint8_max: 255.0
+

@@ -1,0 +1,27 @@
+dataset_name: synthetic_sted_rendered
+sample_count: 8
+split: training
+calibration_status: procedural_unmatched
+geometry:
+  image_shape: [1024, 1024]
+  base_seed: 31001
+  fiber_count_range: [8, 12]
+  points_per_fiber: 112
+  fiber_radius_px: 2.4
+  fiber_intensity: 125.0
+  include_crossings: true
+  include_true_junctions: true
+  include_truncated: true
+targets:
+  centerline_radius_px: 0.75
+  endpoint_radius_px: 3.0
+  junction_radius_px: 3.0
+  crossing_radius_px: 3.0
+rendering:
+  base_seed: 32001
+  background_level: 4.0
+  background_noise_std: 1.2
+  psf_sigma_px: 1.2
+  uint8_min: 0.0
+  uint8_max: 255.0
+

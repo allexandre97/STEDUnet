@@ -1,0 +1,381 @@
+{
+  "alignment_statement": "structural targets are unchanged during real-blank compositing",
+  "array_names": [
+    "blank_float",
+    "centerline_mask",
+    "composite_float",
+    "crossing_map",
+    "edge_fiber_id",
+    "edge_node_indices",
+    "edge_truncated_end",
+    "edge_truncated_start",
+    "endpoint_map",
+    "fiber_ids",
+    "fiber_intensity",
+    "fiber_point_offsets",
+    "fiber_points_xy",
+    "fiber_width",
+    "geometric_crossing_points_xy",
+    "junction_map",
+    "membership_instance_id",
+    "membership_x",
+    "membership_y",
+    "node_type",
+    "node_xy",
+    "overlap_count",
+    "render_float",
+    "render_uint8",
+    "semantic_mask",
+    "source_float",
+    "synthetic_signal_float"
+  ],
+  "artifact_kind": "real_blank_composite_sample",
+  "artifact_schema_version": "sted_appearance_calibration_0.1.0",
+  "calibration_data_status": "exploratory_unpartitioned",
+  "calibration_status": "exploratory_unpartitioned",
+  "clipping_count": 34,
+  "code_version": "812bacb+dirty",
+  "compositing_seed": 53003,
+  "compositor_configuration": {
+    "allow_blank_reuse_across_splits": false,
+    "base_seed": 53001,
+    "blank_scale": 1.0,
+    "crop_mode": "full_image",
+    "sample_count": 8,
+    "synthetic_split": "calibration"
+  },
+  "configuration": {
+    "background_decomposition": {
+      "method": "gaussian_lowpass",
+      "sigma_px_values": [
+        8.0,
+        32.0,
+        64.0
+      ]
+    },
+    "calibration_data_status": "exploratory_unpartitioned",
+    "calibration_parameter_classes": {
+      "along_fiber_intensity_variation": {
+        "classification": "unconstrained",
+        "source": "geometry generator randomization",
+        "uncertainty": "broad"
+      },
+      "anisotropy_ratio": {
+        "classification": "deferred",
+        "source": "not implemented in this phase",
+        "uncertainty": "not_available"
+      },
+      "artificial_background_level": {
+        "classification": "directly_measured",
+        "source": "blank/background intensity summaries",
+        "uncertainty": "image-to-image variability"
+      },
+      "blank_background_scaling": {
+        "classification": "manually_selected",
+        "source": "compositor configuration",
+        "uncertainty": "broad"
+      },
+      "clipping_percentile": {
+        "classification": "deferred",
+        "source": "report only; no automatic fitted clipping",
+        "uncertainty": "not_available"
+      },
+      "empirical_signal_dependent_perturbation": {
+        "classification": "manually_selected",
+        "source": "exploratory compositor",
+        "uncertainty": "not physical photon model"
+      },
+      "fiber_width_px": {
+        "classification": "proxy_estimated",
+        "source": "apparent-width proxy; not ground truth",
+        "uncertainty": "threshold-sensitive"
+      },
+      "float_to_uint8_offset": {
+        "classification": "manually_selected",
+        "source": "explicit uint8 mapping",
+        "uncertainty": "broad"
+      },
+      "float_to_uint8_scale": {
+        "classification": "manually_selected",
+        "source": "explicit uint8 mapping",
+        "uncertainty": "broad"
+      },
+      "local_contrast": {
+        "classification": "proxy_estimated",
+        "source": "local SNR proxy",
+        "uncertainty": "threshold-sensitive"
+      },
+      "psf_sigma_px": {
+        "classification": "manually_selected",
+        "source": "exploratory pixel-space PSF",
+        "uncertainty": "broad"
+      },
+      "synthetic_source_intensity": {
+        "classification": "manually_selected",
+        "source": "exploratory MVP rendering configuration",
+        "uncertainty": "broad"
+      }
+    },
+    "calibration_status": "exploratory_unpartitioned",
+    "compositing": {
+      "allow_blank_reuse_across_splits": false,
+      "base_seed": 53001,
+      "blank_scale": 1.0,
+      "crop_mode": "full_image",
+      "sample_count": 8,
+      "synthetic_split": "calibration"
+    },
+    "dataset_name": "exploratory_real_blank_composites",
+    "geometry": {
+      "base_seed": 51001,
+      "fiber_count_range": [
+        8,
+        12
+      ],
+      "fiber_intensity": 125.0,
+      "fiber_radius_px": 2.4,
+      "image_shape": [
+        1024,
+        1024
+      ],
+      "include_crossings": true,
+      "include_true_junctions": true,
+      "include_truncated": true,
+      "points_per_fiber": 112
+    },
+    "heavy_analysis_max_images_per_kind": 48,
+    "proxies": {
+      "crossing_component_area_px": 20,
+      "min_component_area_px": 8,
+      "ridge_percentile": 95,
+      "sensitivity_threshold_mad_k": [
+        4.0,
+        8.0
+      ],
+      "threshold_mad_k": 6.0
+    },
+    "real_blank_rendering": {
+      "base_seed": 52001,
+      "psf_sigma_px": 1.2,
+      "signal_dependent_perturbation_scale": 0.05,
+      "source_signal_scale": 1.0,
+      "uint8_max": 255.0,
+      "uint8_min": 0.0
+    },
+    "source_roots": {
+      "sted_blank_data": "/ssd/STED_dataset/bigblank",
+      "sted_fiber_data": "/ssd/STED_dataset/data"
+    },
+    "statistics": {
+      "local_block_size_px": 32,
+      "low_frequency_sigma_px": 32.0,
+      "spectrum_bins": 32,
+      "spectrum_size_px": 256
+    },
+    "targets": {
+      "centerline_radius_px": 0.75,
+      "crossing_radius_px": 3.0,
+      "endpoint_radius_px": 3.0,
+      "junction_radius_px": 3.0
+    }
+  },
+  "dataset_schema_version": "synthetic_sted_mvp_0.1.0",
+  "date_generated": "2026-06-18",
+  "dtypes": {
+    "blank_float": "float32",
+    "centerline_mask": "uint8",
+    "composite_float": "float32",
+    "crossing_map": "uint8",
+    "edge_fiber_id": "int32",
+    "edge_node_indices": "int32",
+    "edge_truncated_end": "uint8",
+    "edge_truncated_start": "uint8",
+    "endpoint_map": "uint8",
+    "fiber_ids": "int32",
+    "fiber_intensity": "float32",
+    "fiber_point_offsets": "int32",
+    "fiber_points_xy": "float32",
+    "fiber_width": "float32",
+    "geometric_crossing_points_xy": "float32",
+    "junction_map": "uint8",
+    "membership_instance_id": "int32",
+    "membership_x": "int32",
+    "membership_y": "int32",
+    "node_type": "int16",
+    "node_xy": "float32",
+    "overlap_count": "uint16",
+    "render_float": "float32",
+    "render_uint8": "uint8",
+    "semantic_mask": "uint8",
+    "source_float": "float32",
+    "synthetic_signal_float": "float32"
+  },
+  "enum_mappings": {
+    "node_type": {
+      "endpoint": 1,
+      "true_junction": 2,
+      "truncated_endpoint": 3
+    }
+  },
+  "float_to_uint8_mapping": {
+    "clipped_high_count": 34,
+    "clipped_low_count": 0,
+    "saturation_count": 35,
+    "uint8_max": 255.0,
+    "uint8_min": 0.0
+  },
+  "generator_version": "fibras_synthetic_mvp_0.1.0",
+  "geometry_parameters": {
+    "fiber_count_range": [
+      8,
+      12
+    ],
+    "fiber_intensity": 125.0,
+    "fiber_radius_px": 2.4,
+    "include_crossings": true,
+    "include_true_junctions": true,
+    "include_truncated": true,
+    "points_per_fiber": 112,
+    "spatial_units": "pixels"
+  },
+  "geometry_seed": 51003,
+  "integrity_checksum": {
+    "npz_sha256": "f1208dcda15a0584f96eb46d5d1fecf8fd4a5eee655d71e56c2faf569b5054a1"
+  },
+  "renderer_configuration": {
+    "base_seed": 52001,
+    "psf_sigma_px": 1.2,
+    "signal_dependent_perturbation_scale": 0.05,
+    "source_signal_scale": 1.0,
+    "uint8_max": 255.0,
+    "uint8_min": 0.0
+  },
+  "rendering_seed": 52003,
+  "result_status": "exploratory",
+  "sample_id": "exploratory_real_blank_composites_0002",
+  "saturation_count": 35,
+  "shapes": {
+    "blank_float": [
+      1024,
+      1024
+    ],
+    "centerline_mask": [
+      1024,
+      1024
+    ],
+    "composite_float": [
+      1024,
+      1024
+    ],
+    "crossing_map": [
+      1024,
+      1024
+    ],
+    "edge_fiber_id": [
+      12
+    ],
+    "edge_node_indices": [
+      12,
+      2
+    ],
+    "edge_truncated_end": [
+      12
+    ],
+    "edge_truncated_start": [
+      12
+    ],
+    "endpoint_map": [
+      1024,
+      1024
+    ],
+    "fiber_ids": [
+      12
+    ],
+    "fiber_intensity": [
+      12
+    ],
+    "fiber_point_offsets": [
+      13
+    ],
+    "fiber_points_xy": [
+      1344,
+      2
+    ],
+    "fiber_width": [
+      12
+    ],
+    "geometric_crossing_points_xy": [
+      5,
+      2
+    ],
+    "junction_map": [
+      1024,
+      1024
+    ],
+    "membership_instance_id": [
+      18755
+    ],
+    "membership_x": [
+      18755
+    ],
+    "membership_y": [
+      18755
+    ],
+    "node_type": [
+      22
+    ],
+    "node_xy": [
+      22,
+      2
+    ],
+    "overlap_count": [
+      1024,
+      1024
+    ],
+    "render_float": [
+      1024,
+      1024
+    ],
+    "render_uint8": [
+      1024,
+      1024
+    ],
+    "semantic_mask": [
+      1024,
+      1024
+    ],
+    "source_float": [
+      1024,
+      1024
+    ],
+    "synthetic_signal_float": [
+      1024,
+      1024
+    ]
+  },
+  "source_blank_provenance": {
+    "blank_acquisition_group": "PN148_3R_PID_DIV10",
+    "blank_relative_path": "PN148_3R_PID_DIV10 (Series 6) [1].tif",
+    "blank_sha256": "569dbe00b3311a4de615df9dc96b167a052428e4e5a56904c7ded8a0b58cf2c4",
+    "blank_stable_image_id": "img_06d36760bbaf9a2f347b",
+    "blank_status": "expert_validated",
+    "crop_coordinates": [
+      0,
+      0,
+      1024,
+      1024
+    ],
+    "source_root_id": "sted_blank_data"
+  },
+  "source_image_ids": [
+    "img_06d36760bbaf9a2f347b"
+  ],
+  "source_manifest_version": {
+    "acquisition_groups_csv_sha256": "ff6ac9e9f66894933deb3ffa7dea4ea96e58c6f37e057077d9f40b49fb0d92a4",
+    "sted_blanks_csv_sha256": "e5552df2ff4c0e1347dc8c252d48a36688a9b9a00f1ce503727d213c13d2abe7",
+    "sted_images_csv_sha256": "2eca7b7ce7cfc62f4f7a193a971f9805429f19fe4eaab38ae9d881ba9389a55b",
+    "sted_splits_csv_sha256": "fdb51279f459ce140f16c6fe9e2a3d1d7e729d76510d63bca250cb21bd5e9f72"
+  },
+  "split_manifest_version": "fdb51279f459ce140f16c6fe9e2a3d1d7e729d76510d63bca250cb21bd5e9f72",
+  "synthetic_split": "calibration"
+}

@@ -1,0 +1,249 @@
+{
+  "appearance_parameters": {
+    "background_level": 4.0,
+    "background_noise_std": 1.2,
+    "base_seed": 32001,
+    "psf_sigma_px": 1.2,
+    "uint8_max": 255.0,
+    "uint8_min": 0.0
+  },
+  "array_names": [
+    "centerline_mask",
+    "crossing_map",
+    "edge_fiber_id",
+    "edge_node_indices",
+    "edge_truncated_end",
+    "edge_truncated_start",
+    "endpoint_map",
+    "fiber_ids",
+    "fiber_intensity",
+    "fiber_point_offsets",
+    "fiber_points_xy",
+    "fiber_width",
+    "geometric_crossing_points_xy",
+    "junction_map",
+    "membership_instance_id",
+    "membership_x",
+    "membership_y",
+    "node_type",
+    "node_xy",
+    "overlap_count",
+    "render_float",
+    "render_uint8",
+    "semantic_mask",
+    "source_float"
+  ],
+  "calibration_status": "procedural_unmatched",
+  "coordinate_conventions": {
+    "indexing": "zero_based",
+    "pixel_center": "pixel (x, y) is centered at (x + 0.5, y + 0.5)",
+    "units": "pixels",
+    "xy_order": "x_y"
+  },
+  "dataset_schema_version": "synthetic_sted_mvp_0.1.0",
+  "dtypes": {
+    "centerline_mask": "uint8",
+    "crossing_map": "uint8",
+    "edge_fiber_id": "int32",
+    "edge_node_indices": "int32",
+    "edge_truncated_end": "uint8",
+    "edge_truncated_start": "uint8",
+    "endpoint_map": "uint8",
+    "fiber_ids": "int32",
+    "fiber_intensity": "float32",
+    "fiber_point_offsets": "int32",
+    "fiber_points_xy": "float32",
+    "fiber_width": "float32",
+    "geometric_crossing_points_xy": "float32",
+    "junction_map": "uint8",
+    "membership_instance_id": "int32",
+    "membership_x": "int32",
+    "membership_y": "int32",
+    "node_type": "int16",
+    "node_xy": "float32",
+    "overlap_count": "uint16",
+    "render_float": "float32",
+    "render_uint8": "uint8",
+    "semantic_mask": "uint8",
+    "source_float": "float32"
+  },
+  "enum_mappings": {
+    "node_type": {
+      "endpoint": 1,
+      "true_junction": 2,
+      "truncated_endpoint": 3
+    }
+  },
+  "generation_config": {
+    "calibration_status": "procedural_unmatched",
+    "dataset_name": "synthetic_sted_rendered",
+    "geometry": {
+      "base_seed": 31001,
+      "fiber_count_range": [
+        8,
+        12
+      ],
+      "fiber_intensity": 125.0,
+      "fiber_radius_px": 2.4,
+      "image_shape": [
+        1024,
+        1024
+      ],
+      "include_crossings": true,
+      "include_true_junctions": true,
+      "include_truncated": true,
+      "points_per_fiber": 112
+    },
+    "rendering": {
+      "background_level": 4.0,
+      "background_noise_std": 1.2,
+      "base_seed": 32001,
+      "psf_sigma_px": 1.2,
+      "uint8_max": 255.0,
+      "uint8_min": 0.0
+    },
+    "sample_count": 8,
+    "split": "training",
+    "targets": {
+      "centerline_radius_px": 0.75,
+      "crossing_radius_px": 3.0,
+      "endpoint_radius_px": 3.0,
+      "junction_radius_px": 3.0
+    }
+  },
+  "generator_version": "fibras_synthetic_mvp_0.1.0",
+  "geometry_parameters": {
+    "fiber_count_range": [
+      8,
+      12
+    ],
+    "fiber_intensity": 125.0,
+    "fiber_radius_px": 2.4,
+    "include_crossings": true,
+    "include_true_junctions": true,
+    "include_truncated": true,
+    "points_per_fiber": 112,
+    "spatial_units": "pixels"
+  },
+  "geometry_seed": 31003,
+  "image_shape": [
+    1024,
+    1024
+  ],
+  "integrity_checksum": {
+    "npz_sha256": "1615d60237e60e1bb4247db2b910fff02b6e4253745d33a938bd9767d3ce9e37"
+  },
+  "rasterization_rules": {
+    "canonical_instance_membership": "sparse pixel-to-instance coordinate table",
+    "crossing_map": "raster disks around disconnected centerline intersections",
+    "junction_map": "raster disks around true graph junction nodes",
+    "overlap_count": "number of instance memberships per pixel before PSF blur",
+    "semantic_mask": "union of all clean finite-width instance supports before PSF blur"
+  },
+  "rendering_report": {
+    "clipped_high_count": 16,
+    "clipped_low_count": 0,
+    "saturation_count": 16,
+    "uint8_max": 255.0,
+    "uint8_min": 0.0
+  },
+  "rendering_seed": 32003,
+  "sample_id": "synthetic_sted_rendered_0002",
+  "sample_index": 2,
+  "shapes": {
+    "centerline_mask": [
+      1024,
+      1024
+    ],
+    "crossing_map": [
+      1024,
+      1024
+    ],
+    "edge_fiber_id": [
+      8
+    ],
+    "edge_node_indices": [
+      8,
+      2
+    ],
+    "edge_truncated_end": [
+      8
+    ],
+    "edge_truncated_start": [
+      8
+    ],
+    "endpoint_map": [
+      1024,
+      1024
+    ],
+    "fiber_ids": [
+      8
+    ],
+    "fiber_intensity": [
+      8
+    ],
+    "fiber_point_offsets": [
+      9
+    ],
+    "fiber_points_xy": [
+      896,
+      2
+    ],
+    "fiber_width": [
+      8
+    ],
+    "geometric_crossing_points_xy": [
+      3,
+      2
+    ],
+    "junction_map": [
+      1024,
+      1024
+    ],
+    "membership_instance_id": [
+      12918
+    ],
+    "membership_x": [
+      12918
+    ],
+    "membership_y": [
+      12918
+    ],
+    "node_type": [
+      14
+    ],
+    "node_xy": [
+      14,
+      2
+    ],
+    "overlap_count": [
+      1024,
+      1024
+    ],
+    "render_float": [
+      1024,
+      1024
+    ],
+    "render_uint8": [
+      1024,
+      1024
+    ],
+    "semantic_mask": [
+      1024,
+      1024
+    ],
+    "source_float": [
+      1024,
+      1024
+    ]
+  },
+  "source_blank_provenance": "not_applicable",
+  "split": "training",
+  "tolerance_radii": {
+    "centerline_radius_px": 0.75,
+    "crossing_radius_px": 3.0,
+    "endpoint_radius_px": 3.0,
+    "junction_radius_px": 3.0,
+    "psf_ambiguity_threshold": "not_implemented_in_mvp"
+  }
+}

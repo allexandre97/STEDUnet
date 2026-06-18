@@ -1,0 +1,737 @@
+{
+  "biological_independence_warning": "PN/round/DIV hierarchy unresolved; no biological independence claim is made.",
+  "calibration_parameter_classes": {
+    "along_fiber_intensity_variation": {
+      "classification": "unconstrained",
+      "source": "geometry generator randomization",
+      "uncertainty": "broad"
+    },
+    "anisotropy_ratio": {
+      "classification": "deferred",
+      "source": "not implemented in this phase",
+      "uncertainty": "not_available"
+    },
+    "artificial_background_level": {
+      "classification": "directly_measured",
+      "source": "blank/background intensity summaries",
+      "uncertainty": "image-to-image variability"
+    },
+    "blank_background_scaling": {
+      "classification": "manually_selected",
+      "source": "compositor configuration",
+      "uncertainty": "broad"
+    },
+    "clipping_percentile": {
+      "classification": "deferred",
+      "source": "report only; no automatic fitted clipping",
+      "uncertainty": "not_available"
+    },
+    "empirical_signal_dependent_perturbation": {
+      "classification": "manually_selected",
+      "source": "exploratory compositor",
+      "uncertainty": "not physical photon model"
+    },
+    "fiber_width_px": {
+      "classification": "proxy_estimated",
+      "source": "apparent-width proxy; not ground truth",
+      "uncertainty": "threshold-sensitive"
+    },
+    "float_to_uint8_offset": {
+      "classification": "manually_selected",
+      "source": "explicit uint8 mapping",
+      "uncertainty": "broad"
+    },
+    "float_to_uint8_scale": {
+      "classification": "manually_selected",
+      "source": "explicit uint8 mapping",
+      "uncertainty": "broad"
+    },
+    "local_contrast": {
+      "classification": "proxy_estimated",
+      "source": "local SNR proxy",
+      "uncertainty": "threshold-sensitive"
+    },
+    "psf_sigma_px": {
+      "classification": "manually_selected",
+      "source": "exploratory pixel-space PSF",
+      "uncertainty": "broad"
+    },
+    "synthetic_source_intensity": {
+      "classification": "manually_selected",
+      "source": "exploratory MVP rendering configuration",
+      "uncertainty": "broad"
+    }
+  },
+  "groups": {
+    "artificial_synthetic": {
+      "autocorrelation_tail_median": {
+        "iqr": 0.006134897499999998,
+        "median": -0.011168580000000001,
+        "p05": -0.01623776,
+        "p95": -0.0064603310000000014
+      },
+      "column_variation": {
+        "iqr": 0.022603750000000006,
+        "median": 0.17925600000000003,
+        "p05": 0.1588095,
+        "p95": 0.19597179999999997
+      },
+      "directional_power_ratio": {
+        "iqr": 0.31564225,
+        "median": 0.8937295000000001,
+        "p05": 0.64140915,
+        "p95": 1.282276
+      },
+      "local_variance_p50": {
+        "iqr": 0.0052475000000000716,
+        "median": 1.531195,
+        "p05": 1.5296025,
+        "p95": 1.537906
+      },
+      "p50": {
+        "iqr": 0.0,
+        "median": 4.0,
+        "p05": 4.0,
+        "p95": 4.0
+      },
+      "p95": {
+        "iqr": 1.0,
+        "median": 6.5,
+        "p05": 6.0,
+        "p95": 7.0
+      },
+      "p99": {
+        "iqr": 8.25,
+        "median": 91.0,
+        "p05": 89.0,
+        "p95": 102.3
+      },
+      "radial_power_tail_median": {
+        "iqr": 27721.050000000003,
+        "median": 93440.75,
+        "p05": 70873.25,
+        "p95": 144547.19999999998
+      },
+      "row_variation": {
+        "iqr": 0.019178,
+        "median": 0.2074005,
+        "p05": 0.1767417,
+        "p95": 0.22033134999999998
+      },
+      "saturation_fraction": {
+        "iqr": 4.768424999999998e-06,
+        "median": 1.478195e-05,
+        "p05": 8.010858e-06,
+        "p95": 3.437995999999999e-05
+      },
+      "std": {
+        "iqr": 1.3904750000000021,
+        "median": 13.01545,
+        "p05": 12.608485,
+        "p95": 14.92135
+      },
+      "zero_fraction": {
+        "iqr": 4.3865000000000137e-05,
+        "median": 0.00170088,
+        "p05": 0.0016598735,
+        "p95": 0.0017332535
+      }
+    },
+    "blank": {
+      "autocorrelation_tail_median": {
+        "iqr": 0.15004935,
+        "median": -0.16958099999999998,
+        "p05": -0.28860485,
+        "p95": -0.04737551000000001
+      },
+      "column_variation": {
+        "iqr": 0.1746325,
+        "median": 0.321709,
+        "p05": 0.14382835,
+        "p95": 0.5267759
+      },
+      "directional_power_ratio": {
+        "iqr": 0.05931125000000004,
+        "median": 1.0004565,
+        "p05": 0.8871211,
+        "p95": 1.1339095
+      },
+      "local_variance_p50": {
+        "iqr": 5.772165000000001,
+        "median": 10.015699999999999,
+        "p05": 4.4982875,
+        "p95": 20.633509999999998
+      },
+      "p50": {
+        "iqr": 3.0,
+        "median": 4.0,
+        "p05": 1.0,
+        "p95": 9.0
+      },
+      "p95": {
+        "iqr": 5.0,
+        "median": 13.0,
+        "p05": 8.0,
+        "p95": 22.299999999999997
+      },
+      "p99": {
+        "iqr": 7.25,
+        "median": 18.0,
+        "p05": 11.0,
+        "p95": 29.249999999999993
+      },
+      "radial_power_tail_median": {
+        "iqr": 5364.4375,
+        "median": 11711.599999999999,
+        "p05": 6279.66,
+        "p95": 21588.264999999996
+      },
+      "row_variation": {
+        "iqr": 0.14192299999999997,
+        "median": 0.331731,
+        "p05": 0.1742955,
+        "p95": 0.5166857499999999
+      },
+      "saturation_fraction": {
+        "iqr": 0.0,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.0
+      },
+      "std": {
+        "iqr": 1.5172525000000001,
+        "median": 4.277945,
+        "p05": 2.5880845,
+        "p95": 6.5931095
+      },
+      "zero_fraction": {
+        "iqr": 0.104680775,
+        "median": 0.1044825,
+        "p05": 0.025159775,
+        "p95": 0.2770262999999999
+      }
+    },
+    "real_blank_composite": {
+      "autocorrelation_tail_median": {
+        "iqr": 0.029595,
+        "median": -0.04429615,
+        "p05": -0.07430253,
+        "p95": -0.018550970000000003
+      },
+      "column_variation": {
+        "iqr": 0.04969825,
+        "median": 0.204324,
+        "p05": 0.1819679,
+        "p95": 0.30879509999999993
+      },
+      "directional_power_ratio": {
+        "iqr": 0.15779175,
+        "median": 0.9555895,
+        "p05": 0.6907522500000001,
+        "p95": 1.1828614999999998
+      },
+      "local_variance_p50": {
+        "iqr": 9.816275000000001,
+        "median": 12.594000000000001,
+        "p05": 7.688174,
+        "p95": 23.32681
+      },
+      "p50": {
+        "iqr": 2.75,
+        "median": 6.0,
+        "p05": 3.35,
+        "p95": 10.299999999999999
+      },
+      "p95": {
+        "iqr": 9.0,
+        "median": 19.0,
+        "p05": 12.05,
+        "p95": 27.95
+      },
+      "p99": {
+        "iqr": 8.25,
+        "median": 101.5,
+        "p05": 90.4,
+        "p95": 108.0
+      },
+      "radial_power_tail_median": {
+        "iqr": 52628.75,
+        "median": 116401.5,
+        "p05": 97199.005,
+        "p95": 161140.65
+      },
+      "row_variation": {
+        "iqr": 0.057810749999999966,
+        "median": 0.244284,
+        "p05": 0.19659195000000002,
+        "p95": 0.33795554999999994
+      },
+      "saturation_fraction": {
+        "iqr": 3.1232825e-05,
+        "median": 3.19481e-05,
+        "p05": 1.2111655e-05,
+        "p95": 8.029941e-05
+      },
+      "std": {
+        "iqr": 1.059075,
+        "median": 15.61945,
+        "p05": 13.356475,
+        "p95": 16.473965
+      },
+      "zero_fraction": {
+        "iqr": 0.05960192500000001,
+        "median": 0.0649366,
+        "p05": 0.031753289999999997,
+        "p95": 0.19208379999999994
+      }
+    },
+    "real_fiber": {
+      "autocorrelation_tail_median": {
+        "iqr": 0.145838525,
+        "median": -0.138024,
+        "p05": -0.29187355,
+        "p95": -0.018655650000000003
+      },
+      "column_variation": {
+        "iqr": 0.12046849999999998,
+        "median": 0.3289105,
+        "p05": 0.17107719999999998,
+        "p95": 0.4942310999999999
+      },
+      "directional_power_ratio": {
+        "iqr": 0.07358900000000024,
+        "median": 1.006605,
+        "p05": 0.8267269,
+        "p95": 1.2692409999999998
+      },
+      "local_variance_p50": {
+        "iqr": 6.105162499999999,
+        "median": 11.23505,
+        "p05": 5.2973045,
+        "p95": 30.707099999999993
+      },
+      "p50": {
+        "iqr": 2.0,
+        "median": 4.0,
+        "p05": 3.0,
+        "p95": 12.299999999999997
+      },
+      "p95": {
+        "iqr": 16.0,
+        "median": 17.5,
+        "p05": 9.0,
+        "p95": 71.65
+      },
+      "p99": {
+        "iqr": 46.25,
+        "median": 27.0,
+        "p05": 13.0,
+        "p95": 150.0
+      },
+      "radial_power_tail_median": {
+        "iqr": 22105.975000000006,
+        "median": 16806.75,
+        "p05": 6137.871,
+        "p95": 64980.259999999995
+      },
+      "row_variation": {
+        "iqr": 0.18845349999999994,
+        "median": 0.3486885,
+        "p05": 0.19913050000000002,
+        "p95": 0.5455506999999999
+      },
+      "saturation_fraction": {
+        "iqr": 0.0,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.00010452298999999997
+      },
+      "std": {
+        "iqr": 9.103535,
+        "median": 6.113614999999999,
+        "p05": 2.960965,
+        "p95": 28.181029999999996
+      },
+      "zero_fraction": {
+        "iqr": 0.07204009999999998,
+        "median": 0.09958425,
+        "p05": 0.036663015,
+        "p95": 0.19602279999999997
+      }
+    }
+  },
+  "metadata": {
+    "artifact_kind": "appearance_characterization",
+    "artifact_schema_version": "sted_appearance_calibration_0.1.0",
+    "calibration_data_status": "exploratory_unpartitioned",
+    "calibration_status": "exploratory_unpartitioned",
+    "code_version": "812bacb+dirty",
+    "configuration": {
+      "background_decomposition": {
+        "method": "gaussian_lowpass",
+        "sigma_px_values": [
+          8.0,
+          32.0,
+          64.0
+        ]
+      },
+      "calibration_data_status": "exploratory_unpartitioned",
+      "calibration_parameter_classes": {
+        "along_fiber_intensity_variation": {
+          "classification": "unconstrained",
+          "source": "geometry generator randomization",
+          "uncertainty": "broad"
+        },
+        "anisotropy_ratio": {
+          "classification": "deferred",
+          "source": "not implemented in this phase",
+          "uncertainty": "not_available"
+        },
+        "artificial_background_level": {
+          "classification": "directly_measured",
+          "source": "blank/background intensity summaries",
+          "uncertainty": "image-to-image variability"
+        },
+        "blank_background_scaling": {
+          "classification": "manually_selected",
+          "source": "compositor configuration",
+          "uncertainty": "broad"
+        },
+        "clipping_percentile": {
+          "classification": "deferred",
+          "source": "report only; no automatic fitted clipping",
+          "uncertainty": "not_available"
+        },
+        "empirical_signal_dependent_perturbation": {
+          "classification": "manually_selected",
+          "source": "exploratory compositor",
+          "uncertainty": "not physical photon model"
+        },
+        "fiber_width_px": {
+          "classification": "proxy_estimated",
+          "source": "apparent-width proxy; not ground truth",
+          "uncertainty": "threshold-sensitive"
+        },
+        "float_to_uint8_offset": {
+          "classification": "manually_selected",
+          "source": "explicit uint8 mapping",
+          "uncertainty": "broad"
+        },
+        "float_to_uint8_scale": {
+          "classification": "manually_selected",
+          "source": "explicit uint8 mapping",
+          "uncertainty": "broad"
+        },
+        "local_contrast": {
+          "classification": "proxy_estimated",
+          "source": "local SNR proxy",
+          "uncertainty": "threshold-sensitive"
+        },
+        "psf_sigma_px": {
+          "classification": "manually_selected",
+          "source": "exploratory pixel-space PSF",
+          "uncertainty": "broad"
+        },
+        "synthetic_source_intensity": {
+          "classification": "manually_selected",
+          "source": "exploratory MVP rendering configuration",
+          "uncertainty": "broad"
+        }
+      },
+      "calibration_status": "exploratory_unpartitioned",
+      "compositing": {
+        "allow_blank_reuse_across_splits": false,
+        "base_seed": 53001,
+        "blank_scale": 1.0,
+        "crop_mode": "full_image",
+        "sample_count": 8,
+        "synthetic_split": "calibration"
+      },
+      "dataset_name": "exploratory_real_blank_composites",
+      "geometry": {
+        "base_seed": 51001,
+        "fiber_count_range": [
+          8,
+          12
+        ],
+        "fiber_intensity": 125.0,
+        "fiber_radius_px": 2.4,
+        "image_shape": [
+          1024,
+          1024
+        ],
+        "include_crossings": true,
+        "include_true_junctions": true,
+        "include_truncated": true,
+        "points_per_fiber": 112
+      },
+      "heavy_analysis_max_images_per_kind": 48,
+      "proxies": {
+        "crossing_component_area_px": 20,
+        "min_component_area_px": 8,
+        "ridge_percentile": 95,
+        "sensitivity_threshold_mad_k": [
+          4.0,
+          8.0
+        ],
+        "threshold_mad_k": 6.0
+      },
+      "real_blank_rendering": {
+        "base_seed": 52001,
+        "psf_sigma_px": 1.2,
+        "signal_dependent_perturbation_scale": 0.05,
+        "source_signal_scale": 1.0,
+        "uint8_max": 255.0,
+        "uint8_min": 0.0
+      },
+      "source_roots": {
+        "sted_blank_data": "/ssd/STED_dataset/bigblank",
+        "sted_fiber_data": "/ssd/STED_dataset/data"
+      },
+      "statistics": {
+        "local_block_size_px": 32,
+        "low_frequency_sigma_px": 32.0,
+        "spectrum_bins": 32,
+        "spectrum_size_px": 256
+      },
+      "targets": {
+        "centerline_radius_px": 0.75,
+        "crossing_radius_px": 3.0,
+        "endpoint_radius_px": 3.0,
+        "junction_radius_px": 3.0
+      }
+    },
+    "date_generated": "2026-06-18",
+    "result_status": "exploratory",
+    "source_image_ids": [
+      "img_00273a310a71b5db79f4",
+      "img_05ef13116918fe81f04f",
+      "img_0c8a0b5f3edf1b944767",
+      "img_11be543bc5496ac91286",
+      "img_18c88a5dbc0dccf62c2b",
+      "img_1d7ccf3c094483b24e48",
+      "img_2358b4c0243cb146ebdf",
+      "img_2a83cf27e86fd0275008",
+      "img_2fa4cb54c075c955d833",
+      "img_326a83325050177883ff",
+      "img_3833189ffe66380cff12",
+      "img_3eb9582a5c396fb263cd",
+      "img_426adddcfa9cb91e899e",
+      "img_46f3ae514baa7e03beba",
+      "img_4cb4bb6c9c71e61aa6bc",
+      "img_4e5e605d4c6a24528512",
+      "img_5620390cd33446297f54",
+      "img_5d206cdbc82b5943d9ac",
+      "img_6354fbe0270925b9d4c5",
+      "img_6786c4e69a2dd3728358",
+      "img_6bdff4cbc2cb4ee79484",
+      "img_724d96e0bee36929b82d",
+      "img_776b1f9c56cf22f17a90",
+      "img_79ca2e0f353d755b582e",
+      "img_822bb28426cde4056c4f",
+      "img_862a8482f2a82d7f0e76",
+      "img_8c3e1bafe832abb0ecab",
+      "img_8fa2450a020230008df2",
+      "img_96b6ee51a7c5c83b1aa5",
+      "img_a11a43452232dceb9078",
+      "img_a637c5c54d068c15bf2f",
+      "img_aa6e949a5fb4e1af4311",
+      "img_adf0a73f0c61c7077f54",
+      "img_b39e45524852b6ff530d",
+      "img_b7842ce241cf56525577",
+      "img_bb9526aa8e73e5120f68",
+      "img_c05a7da03d4448065d5e",
+      "img_c7247ce8d4425c9ca704",
+      "img_cad83080e420fd977a9b",
+      "img_d076806a156c74e5e9ab",
+      "img_d923330841d93407614c",
+      "img_dfb38c9ebff399b3f86e",
+      "img_e650e1515047a1f7fba6",
+      "img_ea91c645683f7bd78ded",
+      "img_ee59402cbcbef63f208f",
+      "img_f4a75c6be81d580370d0",
+      "img_fa70735736b0e419c83c",
+      "img_ffe8f9679077448a6547",
+      "img_014d9d77d1d61fed189b",
+      "img_06494922b372657b5c88",
+      "img_06d36760bbaf9a2f347b",
+      "img_071f2eb0e8624d5adc25",
+      "img_093eea09221a4db0ebec",
+      "img_0d4cd0a31114b105cf51",
+      "img_0f46f20cbb8877572a9b",
+      "img_10b1191cd6b41696b305",
+      "img_17506389406a99cb56d1",
+      "img_197a1eda9c7e380a79bc",
+      "img_22a6ba5828c46f12f6e5",
+      "img_2677af2396cd59353057",
+      "img_308fa0196a5896a7896b",
+      "img_351f2b19d31066686b88",
+      "img_380582f92698aae8c505",
+      "img_3e48ea79cdd6eb2f3608",
+      "img_42e8d8a784a69489e580",
+      "img_44974790651d1b7badfa",
+      "img_4b1f1b0523dd6c73177c",
+      "img_4d5ab86fec7995e4762a",
+      "img_4ec66ad0f9ecacf25377",
+      "img_554468edaeb27daf1a00",
+      "img_5882372f16349d4ccf22",
+      "img_6fcc906a6259240a019e",
+      "img_7614f115c69c8f5322b1",
+      "img_7feb5e8e13265c3c18f0",
+      "img_84c0549996fe08b21c59",
+      "img_8995027102563a3627f3",
+      "img_8e8d01b23af815bfbb96",
+      "img_918a8d57c1cfbf26031e",
+      "img_94ceca68616646b10924",
+      "img_9a2b1bf1a7264d1bafde",
+      "img_9b9b12e6080c8ba88b54",
+      "img_a538de08cfa15ee606a9",
+      "img_ab8a5dd57e15fbe9d2e3",
+      "img_afedddc4a39035e55219",
+      "img_b2abcc150c16a6d7cca7",
+      "img_ba526d53c5769bd5fece",
+      "img_c00182c8d4f47fe67aa9",
+      "img_ca042c3dcfcf09035923",
+      "img_d0a41f4af32f4866497f",
+      "img_d48ab8d2ac1026abfc85",
+      "img_e0f39b43e3d3f4c281a1",
+      "img_e365a76f42760dd466b9",
+      "img_e8891781fa88057f59f7",
+      "img_eeb10bbc10a5ef3f859b",
+      "img_f350649ab42bc5242f19",
+      "img_fe985fa79b4211834161"
+    ],
+    "source_manifest_version": {
+      "acquisition_groups_csv_sha256": "ff6ac9e9f66894933deb3ffa7dea4ea96e58c6f37e057077d9f40b49fb0d92a4",
+      "sted_blanks_csv_sha256": "e5552df2ff4c0e1347dc8c252d48a36688a9b9a00f1ce503727d213c13d2abe7",
+      "sted_images_csv_sha256": "2eca7b7ce7cfc62f4f7a193a971f9805429f19fe4eaab38ae9d881ba9389a55b",
+      "sted_splits_csv_sha256": "fdb51279f459ce140f16c6fe9e2a3d1d7e729d76510d63bca250cb21bd5e9f72"
+    },
+    "split_manifest_version": "fdb51279f459ce140f16c6fe9e2a3d1d7e729d76510d63bca250cb21bd5e9f72"
+  },
+  "proxy_metadata": {
+    "configuration": {
+      "crossing_component_area_px": 20,
+      "min_component_area_px": 8,
+      "ridge_percentile": 95,
+      "sensitivity_threshold_mad_k": [
+        4.0,
+        8.0
+      ],
+      "threshold_mad_k": 6.0
+    },
+    "estimators": {
+      "apparent_width_proxy": "thresholded component minor bounding-box dimension",
+      "component_length_proxy": "thresholded component major bounding-box dimension",
+      "endpoint_crossing_density": "thresholded connected-component proxy counts",
+      "foreground_occupancy_proxy": "MAD/percentile threshold occupancy",
+      "orientation_distribution": "gradient-normal orientation on high ridge proxy pixels",
+      "ridge_response_distribution": "central-difference gradient magnitude"
+    },
+    "warning": "proxy estimates are not ground truth"
+  },
+  "representative_selection": {
+    "blank_ids": [
+      "img_014d9d77d1d61fed189b",
+      "img_06494922b372657b5c88",
+      "img_06d36760bbaf9a2f347b",
+      "img_071f2eb0e8624d5adc25",
+      "img_093eea09221a4db0ebec",
+      "img_0d4cd0a31114b105cf51",
+      "img_0f46f20cbb8877572a9b",
+      "img_10b1191cd6b41696b305",
+      "img_17506389406a99cb56d1",
+      "img_197a1eda9c7e380a79bc",
+      "img_22a6ba5828c46f12f6e5",
+      "img_2677af2396cd59353057",
+      "img_308fa0196a5896a7896b",
+      "img_351f2b19d31066686b88",
+      "img_380582f92698aae8c505",
+      "img_3e48ea79cdd6eb2f3608",
+      "img_42e8d8a784a69489e580",
+      "img_44974790651d1b7badfa",
+      "img_4b1f1b0523dd6c73177c",
+      "img_4d5ab86fec7995e4762a",
+      "img_4ec66ad0f9ecacf25377",
+      "img_554468edaeb27daf1a00",
+      "img_5882372f16349d4ccf22",
+      "img_6fcc906a6259240a019e",
+      "img_7614f115c69c8f5322b1",
+      "img_7feb5e8e13265c3c18f0",
+      "img_84c0549996fe08b21c59",
+      "img_8995027102563a3627f3",
+      "img_8e8d01b23af815bfbb96",
+      "img_918a8d57c1cfbf26031e",
+      "img_94ceca68616646b10924",
+      "img_9a2b1bf1a7264d1bafde",
+      "img_9b9b12e6080c8ba88b54",
+      "img_a538de08cfa15ee606a9",
+      "img_ab8a5dd57e15fbe9d2e3",
+      "img_afedddc4a39035e55219",
+      "img_b2abcc150c16a6d7cca7",
+      "img_ba526d53c5769bd5fece",
+      "img_c00182c8d4f47fe67aa9",
+      "img_ca042c3dcfcf09035923",
+      "img_d0a41f4af32f4866497f",
+      "img_d48ab8d2ac1026abfc85",
+      "img_e0f39b43e3d3f4c281a1",
+      "img_e365a76f42760dd466b9",
+      "img_e8891781fa88057f59f7",
+      "img_eeb10bbc10a5ef3f859b",
+      "img_f350649ab42bc5242f19",
+      "img_fe985fa79b4211834161"
+    ],
+    "heavy_analysis_max_images_per_kind": 48,
+    "method": "deterministic stable_image_id sorted linspace subset",
+    "real_fiber_ids": [
+      "img_00273a310a71b5db79f4",
+      "img_05ef13116918fe81f04f",
+      "img_0c8a0b5f3edf1b944767",
+      "img_11be543bc5496ac91286",
+      "img_18c88a5dbc0dccf62c2b",
+      "img_1d7ccf3c094483b24e48",
+      "img_2358b4c0243cb146ebdf",
+      "img_2a83cf27e86fd0275008",
+      "img_2fa4cb54c075c955d833",
+      "img_326a83325050177883ff",
+      "img_3833189ffe66380cff12",
+      "img_3eb9582a5c396fb263cd",
+      "img_426adddcfa9cb91e899e",
+      "img_46f3ae514baa7e03beba",
+      "img_4cb4bb6c9c71e61aa6bc",
+      "img_4e5e605d4c6a24528512",
+      "img_5620390cd33446297f54",
+      "img_5d206cdbc82b5943d9ac",
+      "img_6354fbe0270925b9d4c5",
+      "img_6786c4e69a2dd3728358",
+      "img_6bdff4cbc2cb4ee79484",
+      "img_724d96e0bee36929b82d",
+      "img_776b1f9c56cf22f17a90",
+      "img_79ca2e0f353d755b582e",
+      "img_822bb28426cde4056c4f",
+      "img_862a8482f2a82d7f0e76",
+      "img_8c3e1bafe832abb0ecab",
+      "img_8fa2450a020230008df2",
+      "img_96b6ee51a7c5c83b1aa5",
+      "img_a11a43452232dceb9078",
+      "img_a637c5c54d068c15bf2f",
+      "img_aa6e949a5fb4e1af4311",
+      "img_adf0a73f0c61c7077f54",
+      "img_b39e45524852b6ff530d",
+      "img_b7842ce241cf56525577",
+      "img_bb9526aa8e73e5120f68",
+      "img_c05a7da03d4448065d5e",
+      "img_c7247ce8d4425c9ca704",
+      "img_cad83080e420fd977a9b",
+      "img_d076806a156c74e5e9ab",
+      "img_d923330841d93407614c",
+      "img_dfb38c9ebff399b3f86e",
+      "img_e650e1515047a1f7fba6",
+      "img_ea91c645683f7bd78ded",
+      "img_ee59402cbcbef63f208f",
+      "img_f4a75c6be81d580370d0",
+      "img_fa70735736b0e419c83c",
+      "img_ffe8f9679077448a6547"
+    ]
+  }
+}

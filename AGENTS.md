@@ -46,6 +46,7 @@ For tasks unrelated to literature evidence, do not load or restate the full lite
 - Every nontrivial reported fact or paper-attributed claim must have page-linked evidence as required by the schema.
 - Every project recommendation or STED-transfer judgment must be labelled as agent inference and cite its evidential basis.
 - Do not add or replace a source paper without updating the manifest and reviewing the corpus scope.
+- For synthetic STED work, treat `data_manifests/*.csv` as authoritative for source identity, PN-level biological-sample partitioning, acquisition metadata, split eligibility, and expert-validated blank provenance. `PN###` is the indivisible primary partitioning unit; condition and DIV are stratification/reporting variables, not grouping boundaries. Downstream code must read these manifests rather than independently inferring grouping from filenames, and normal tests must not require local `/ssd` paths.
 
 ## Commands
 

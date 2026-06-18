@@ -1,0 +1,100 @@
+dataset_name: exploratory_real_blank_composites
+calibration_status: exploratory_unpartitioned
+calibration_data_status: exploratory_unpartitioned
+source_roots:
+  sted_fiber_data: /ssd/STED_dataset/data
+  sted_blank_data: /ssd/STED_dataset/bigblank
+heavy_analysis_max_images_per_kind: 48
+statistics:
+  local_block_size_px: 32
+  low_frequency_sigma_px: 32.0
+  spectrum_size_px: 256
+  spectrum_bins: 32
+proxies:
+  threshold_mad_k: 6.0
+  sensitivity_threshold_mad_k: [4.0, 8.0]
+  ridge_percentile: 95
+  min_component_area_px: 8
+  crossing_component_area_px: 20
+background_decomposition:
+  method: gaussian_lowpass
+  sigma_px_values: [8.0, 32.0, 64.0]
+geometry:
+  image_shape: [1024, 1024]
+  base_seed: 51001
+  fiber_count_range: [8, 12]
+  points_per_fiber: 112
+  fiber_radius_px: 2.4
+  fiber_intensity: 125.0
+  include_crossings: true
+  include_true_junctions: true
+  include_truncated: true
+targets:
+  centerline_radius_px: 0.75
+  endpoint_radius_px: 3.0
+  junction_radius_px: 3.0
+  crossing_radius_px: 3.0
+real_blank_rendering:
+  base_seed: 52001
+  source_signal_scale: 1.0
+  psf_sigma_px: 1.2
+  signal_dependent_perturbation_scale: 0.05
+  uint8_min: 0.0
+  uint8_max: 255.0
+compositing:
+  base_seed: 53001
+  sample_count: 8
+  synthetic_split: calibration
+  crop_mode: full_image
+  blank_scale: 1.0
+  allow_blank_reuse_across_splits: false
+calibration_parameter_classes:
+  synthetic_source_intensity:
+    classification: manually_selected
+    source: exploratory MVP rendering configuration
+    uncertainty: broad
+  along_fiber_intensity_variation:
+    classification: unconstrained
+    source: geometry generator randomization
+    uncertainty: broad
+  fiber_width_px:
+    classification: proxy_estimated
+    source: apparent-width proxy; not ground truth
+    uncertainty: threshold-sensitive
+  psf_sigma_px:
+    classification: manually_selected
+    source: exploratory pixel-space PSF
+    uncertainty: broad
+  anisotropy_ratio:
+    classification: deferred
+    source: not implemented in this phase
+    uncertainty: not_available
+  artificial_background_level:
+    classification: directly_measured
+    source: blank/background intensity summaries
+    uncertainty: image-to-image variability
+  blank_background_scaling:
+    classification: manually_selected
+    source: compositor configuration
+    uncertainty: broad
+  local_contrast:
+    classification: proxy_estimated
+    source: local SNR proxy
+    uncertainty: threshold-sensitive
+  float_to_uint8_offset:
+    classification: manually_selected
+    source: explicit uint8 mapping
+    uncertainty: broad
+  float_to_uint8_scale:
+    classification: manually_selected
+    source: explicit uint8 mapping
+    uncertainty: broad
+  clipping_percentile:
+    classification: deferred
+    source: report only; no automatic fitted clipping
+    uncertainty: not_available
+  empirical_signal_dependent_perturbation:
+    classification: manually_selected
+    source: exploratory compositor
+    uncertainty: not physical photon model
+
