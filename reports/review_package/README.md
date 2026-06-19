@@ -1,7 +1,7 @@
 # Curated STED calibration review package
 
-- Source commit: `9a5aa79b3f680814ad279ec17a3d4543d1624d9f`
-- Working tree dirty: `True`
+- Source commit: `fef74d7a291b4aae260d6cd575e3b8efad5f6d40`
+- Working tree dirty: `False`
 - Schema: `synthetic_sted_3d_rasterizer_0.5.0`
 - Generation config SHA-256: `7002bebd6ad5525101cffc5c88edfce0d3d106a087a73b8d0473fddf6cae6a47`
 - Selection: deterministic low/median/high p99 cases per generated dataset.

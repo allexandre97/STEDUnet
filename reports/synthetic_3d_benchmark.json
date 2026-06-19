@@ -4,49 +4,49 @@
       "brute_force_pairs": 170957,
       "candidate_pairs": 0,
       "case": "sparse_1024",
-      "crossing_detection_seconds": 0.037774122785776854,
-      "distance_transform_seconds": 0.026269773952662945,
+      "crossing_detection_seconds": 0.03780006105080247,
+      "distance_transform_seconds": 0.026968021877110004,
       "kernel_count": 1446,
       "peak_memory_mb": 185.01559448242188,
-      "wall_time_seconds": 0.5486579849384725
+      "wall_time_seconds": 0.5441460148431361
     },
     {
       "brute_force_pairs": 2759941,
       "candidate_pairs": 10908,
       "case": "dense_1024",
-      "crossing_detection_seconds": 0.5982411620207131,
-      "distance_transform_seconds": 0.03971471777185798,
+      "crossing_detection_seconds": 0.5997370067052543,
+      "distance_transform_seconds": 0.0313500938937068,
       "kernel_count": 4984,
-      "peak_memory_mb": 186.86017513275146,
-      "wall_time_seconds": 1.8146266168914735
+      "peak_memory_mb": 186.86022663116455,
+      "wall_time_seconds": 1.831780128646642
     },
     {
       "brute_force_pairs": 514089,
       "candidate_pairs": 1089,
       "case": "structural_qa_1024",
-      "crossing_detection_seconds": 0.11587358685210347,
-      "distance_transform_seconds": 0.031756502110511065,
+      "crossing_detection_seconds": 0.1232326072640717,
+      "distance_transform_seconds": 0.032075086142867804,
       "kernel_count": 2872,
       "peak_memory_mb": 186.40088558197021,
-      "wall_time_seconds": 0.8202630430459976
+      "wall_time_seconds": 0.8414779421873391
     }
   ],
-  "distance_transform_1024_seconds": 0.04126358684152365,
+  "distance_transform_1024_seconds": 0.04039982799440622,
   "distance_transform_backend": "scipy_ndimage_distance_transform_edt",
   "environment": {
     "numpy": "2.2.6",
     "python": "3.10.20 | packaged by conda-forge | (main, Jun 11 2026, 03:31:56) [GCC 14.3.0]",
     "scipy": "1.15.2"
   },
-  "full_pipeline_width_fixture_seconds": 0.19362636376172304,
-  "optical_only_width_calibration_seconds": 0.058091535698622465,
+  "full_pipeline_width_fixture_seconds": 0.2080004708841443,
+  "optical_only_width_calibration_seconds": 0.05958810914307833,
   "width_calibration": {
     "integrated_transverse_signal": 75.25920104980469,
     "line_density_amplitude": 99.82598114013672,
     "max_allowed_fwhm_px": 5.5,
     "measured_fwhm_px": 5.212856292724609,
     "min_allowed_fwhm_px": 4.5,
-    "optical_only_elapsed_seconds": 0.05702499020844698,
+    "optical_only_elapsed_seconds": 0.058316896203905344,
     "peak_transverse_signal": 13.160660743713379,
     "sampling_interval_px": 1.0,
     "target_fwhm_px": 5.0
