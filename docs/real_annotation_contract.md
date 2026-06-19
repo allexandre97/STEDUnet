@@ -16,7 +16,9 @@ Real images may be used condition-blind for image-formation calibration. Synthet
 | 3 | `clump` | Compact or amorphous structure without reliably traceable filament morphology. Do not assign an arbitrary filament skeleton. |
 | 255 | `uncertain_ignore` | Class, presence, or boundary is uncertain; exclude from applicable supervised losses. |
 
-The current synthetic generator still emits a binary semantic mask. These class values are reserved for future real annotations and compatible loaders; the simulator does not claim to generate realistic bundles or clumps.
+Schema `synthetic_sted_3d_morphology_0.6.0` emits this multiclass target for exploratory morphology review while retaining a binary compatibility mask equal to the union of classes 1–3. Earlier 3D schemas remain binary and are not reinterpreted.
+
+Synthetic bundles are correlated child filaments around a bundle axis. Their deliberately unresolved child centerlines are latent simulator provenance, not ordinary filament-centerline targets. Synthetic clumps are compact aggregates of short latent fragments and receive no filament centerline or endpoint target. These procedural structures broaden training-domain coverage; they are not claimed to reproduce real bundle or clump distributions.
 
 ## Trace termination statuses
 
@@ -29,3 +31,5 @@ Reserve these values for annotation conversion and future trace storage:
 - `ambiguous_termination`
 
 Centerline losses apply only where an individual filament is traceable. Clumps receive no filament centerline target. Patch- or image-boundary clipping is a boundary truncation, not a biological endpoint.
+
+At a clear filament-to-bundle or filament-to-clump transition, the trace uses `terminates_in_bundle` or `terminates_in_clump`; it is not a biological endpoint. Configured uncertain transition pixels use class 255 and are excluded from the binary foreground compatibility mask.

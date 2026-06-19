@@ -38,6 +38,8 @@ examples/rasterizer_structural_qa/
 examples/rasterizer_optical_qa/
 examples/synthetic_sted_3d_realism/
 examples/sted_blank_composites_3d_realism/
+examples/synthetic_sted_morphology_review/
+examples/sted_blank_composites_morphology_review/
 examples/sted_blank_composites_3d_normalized/
 examples/synthetic_sted_3d_normalized/
 
@@ -64,6 +66,7 @@ reports/sted_blank_composite_visuals/
 reports/sted_blank_composite_3d_normalized_visuals/
 reports/sted_blank_composite_3d_realism_visuals/
 reports/synthetic_mvp_visuals/
+reports/synthetic_morphology_review/full_samples/
 reports/review_package/*
 !reports/review_package/README.md
 !reports/review_package/*.png

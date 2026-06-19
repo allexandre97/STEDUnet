@@ -12,6 +12,10 @@ import numpy as np
 
 from .geometry import generate_geometry, geometry_to_arrays
 from .geometry3d import generate_persistent_chain_geometry, geometry3d_to_arrays
+from .morphology3d import (
+    generate_morphology_geometry,
+    morphology_geometry_to_arrays,
+)
 from .rendering import render_image
 from .rasterizer3d import measure_isolated_fiber_fwhm, rasterize_3d_sample
 from .schema import (
@@ -21,14 +25,17 @@ from .schema import (
     DATASET_SCHEMA_VERSION_3D_HARDENED,
     DATASET_SCHEMA_VERSION_3D_LEGACY,
     DATASET_SCHEMA_VERSION_3D_NORMALIZED,
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     GENERATOR_MODES,
     GENERATOR_VERSION,
     GENERATOR_VERSION_3D,
+    GENERATOR_VERSION_3D_MORPHOLOGY,
     NODE_TYPES,
     REAL_SEMANTIC_CLASSES,
     REQUIRED_ARRAYS,
     REQUIRED_ARRAYS_BY_SCHEMA,
     TRACE_TERMINATION_STATUSES,
+    TRACE_TERMINATION_STATUS_CODES,
 )
 from .targets import rasterize_targets
 
@@ -46,6 +53,8 @@ def build_sample(config: dict[str, Any], sample_index: int) -> tuple[str, dict[s
     mode = generator_mode(config)
     if mode == "persistent_chain_3d":
         return build_sample_3d(config, sample_index, sample_id)
+    if mode == "morphology_scene_3d":
+        return build_sample_morphology(config, sample_index, sample_id)
     if mode not in {"structural_test_2d", "legacy_2d"}:
         raise ValueError(f"unsupported generator_mode: {mode}")
     geometry_config = config.get("geometry", {})
@@ -88,6 +97,83 @@ def build_sample_3d(config: dict[str, Any], sample_index: int, sample_id: str) -
     )
     arrays.update(raster_arrays)
     metadata = metadata_for_sample_3d(sample_id, config, sample_index, geometry, arrays, geometry_seed, rendering_seed, render_report)
+    return sample_id, arrays, metadata
+
+
+def build_sample_morphology(
+    config: dict[str, Any], sample_index: int, sample_id: str
+) -> tuple[str, dict[str, np.ndarray], dict[str, Any]]:
+    geometry_config = config["geometry"]
+    rendering_seed = (
+        int(config.get("output_mapping", {}).get("base_seed", 82001))
+        + sample_index
+    )
+    geometry_seed = int(geometry_config.get("base_seed", 81001)) + sample_index
+    geometry = generate_morphology_geometry(config, sample_index)
+    arrays = morphology_geometry_to_arrays(
+        geometry, geometry3d_to_arrays(geometry)
+    )
+    raster_arrays, render_report = rasterize_3d_sample(
+        geometry,
+        config.get("targets", {}),
+        config.get("optical_model", {}),
+        config.get("output_mapping", {}),
+        rendering_seed,
+    )
+    arrays.update(raster_arrays)
+    metadata = metadata_for_sample_3d(
+        sample_id,
+        config,
+        sample_index,
+        geometry,
+        arrays,
+        geometry_seed,
+        rendering_seed,
+        render_report,
+        schema_version=DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
+        generator_version=GENERATOR_VERSION_3D_MORPHOLOGY,
+        mode="morphology_scene_3d",
+    )
+    metadata["schema_migration"] = (
+        "0.6.0 adds condition-blind heterogeneous morphology, multiclass "
+        "semantic targets, bundle/clump instances, latent child geometry, and "
+        "trace termination status arrays; schema 0.5 remains unchanged"
+    )
+    metadata["annotation_contract"].update(
+        {
+            "current_binary_semantic_mask": False,
+            "multiclass_semantic_mask": "semantic_class_mask",
+            "bundle_and_clump_generation": "implemented_as_exploratory_synthetic_morphology",
+            "centerline_supervision": "individual_filament class only",
+            "clump_centerline_target": "not_available",
+            "trace_status_codes": TRACE_TERMINATION_STATUS_CODES,
+        }
+    )
+    metadata["multiclass_target_contract"] = {
+        "class_ids": REAL_SEMANTIC_CLASSES,
+        "class_priority": render_report["class_priority"],
+        "binary_semantic_mask": render_report["binary_semantic_mask_source"],
+        "supervised_targets": [
+            "semantic_class_mask",
+            "semantic_mask",
+            "individual_filament_mask",
+            "bundle_mask",
+            "clump_mask",
+            "uncertain_ignore_mask",
+            "filament_centerline_mask",
+            "bundle_axis_mask",
+            "endpoint_map",
+            "projected_crossing_map",
+        ],
+        "latent_synthetic_provenance": [
+            "fiber_structure_type",
+            "fiber_parent_bundle_id",
+            "fiber_parent_clump_id",
+            "fiber_supervised_centerline_sample",
+            "bundle_child_fiber_ids",
+            "clump_fragment_fiber_ids",
+        ],
+    }
     return sample_id, arrays, metadata
 
 
@@ -156,6 +242,10 @@ def metadata_for_sample_3d(
     geometry_seed: int,
     rendering_seed: int,
     render_report: dict[str, Any],
+    *,
+    schema_version: str = DATASET_SCHEMA_VERSION_3D,
+    generator_version: str = GENERATOR_VERSION_3D,
+    mode: str = "persistent_chain_3d",
 ) -> dict[str, Any]:
     calibration_status = config.get("calibration_status", "procedural_unmatched")
     if calibration_status not in CALIBRATION_STATUSES:
@@ -165,10 +255,10 @@ def metadata_for_sample_3d(
     return {
         "sample_id": sample_id,
         "sample_index": sample_index,
-        "dataset_schema_version": DATASET_SCHEMA_VERSION_3D,
+        "dataset_schema_version": schema_version,
         "schema_migration": "0.5.0 adds projected_crossing_fiber_ids and projected_crossing_segment_indices; 0.4.0 source, distance, orientation, membership, and PSF conventions are unchanged",
-        "generator_version": GENERATOR_VERSION_3D,
-        "generator_mode": "persistent_chain_3d",
+        "generator_version": generator_version,
+        "generator_mode": mode,
         "geometry_seed": geometry_seed,
         "rendering_seed": rendering_seed,
         "generation_config": config,
@@ -269,8 +359,12 @@ def metadata_for_sample_3d(
 def save_dataset(config: dict[str, Any], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     count = int(config.get("sample_count", 8))
-    if not (8 <= count <= 16):
-        raise ValueError("MVP sample_count must be between 8 and 16")
+    mode = generator_mode(config)
+    limit = 32 if mode == "morphology_scene_3d" else 16
+    if not (8 <= count <= limit):
+        raise ValueError(
+            f"{mode} sample_count must be between 8 and {limit}"
+        )
     rows: list[dict[str, str]] = []
     for index in range(count):
         sample_id, arrays, metadata = build_sample(config, index)
@@ -329,7 +423,16 @@ def validate_dataset(out_dir: Path, deterministic: bool = True) -> list[str]:
         with np.load(npz_path, allow_pickle=False) as data:
             arrays = {name: data[name] for name in data.files}
         errors.extend(validate_sample_arrays(row["sample_id"], arrays, metadata))
-        if deterministic and metadata.get("dataset_schema_version") == DATASET_SCHEMA_VERSION_3D:
+        is_composite = metadata.get("source_blank_provenance") != "not_applicable"
+        if (
+            deterministic
+            and not is_composite
+            and metadata.get("dataset_schema_version")
+            in {
+            DATASET_SCHEMA_VERSION_3D,
+            DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
+            }
+        ):
             _, rebuilt, rebuilt_metadata = build_sample(
                 metadata["generation_config"], int(metadata["sample_index"])
             )
@@ -416,10 +519,23 @@ def validate_sample_arrays(sample_id: str, arrays: dict[str, np.ndarray], metada
         errors.append(f"{sample_id}: invalid generator version")
     if schema_version == DATASET_SCHEMA_VERSION_3D and metadata.get("generator_version") != GENERATOR_VERSION_3D:
         errors.append(f"{sample_id}: invalid 3D generator version")
-    if metadata.get("calibration_status") != "procedural_unmatched":
+    if (
+        schema_version == DATASET_SCHEMA_VERSION_3D_MORPHOLOGY
+        and metadata.get("generator_version")
+        != GENERATOR_VERSION_3D_MORPHOLOGY
+    ):
+        errors.append(f"{sample_id}: invalid morphology generator version")
+    is_composite = metadata.get("source_blank_provenance") != "not_applicable"
+    if is_composite:
+        if metadata.get("calibration_status") not in {
+            "exploratory_unpartitioned",
+            "exploratory_provisional_split",
+        }:
+            errors.append(
+                f"{sample_id}: composite calibration status must be exploratory"
+            )
+    elif metadata.get("calibration_status") != "procedural_unmatched":
         errors.append(f"{sample_id}: MVP examples must be procedural_unmatched")
-    if metadata.get("source_blank_provenance") != "not_applicable":
-        errors.append(f"{sample_id}: real blank compositing is deferred")
     if not missing and schema_version == DATASET_SCHEMA_VERSION:
         overlap = arrays["overlap_count"]
         expected = np.zeros_like(overlap, dtype=np.uint16)
@@ -443,6 +559,7 @@ def validate_sample_arrays(sample_id: str, arrays: dict[str, np.ndarray], metada
         DATASET_SCHEMA_VERSION_3D_HARDENED,
         DATASET_SCHEMA_VERSION_3D_NORMALIZED,
         DATASET_SCHEMA_VERSION_3D_LEGACY,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }:
         errors.extend(validate_3d_arrays(sample_id, arrays, metadata))
     return errors
@@ -455,11 +572,14 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
         DATASET_SCHEMA_VERSION_3D,
         DATASET_SCHEMA_VERSION_3D_HARDENED,
         DATASET_SCHEMA_VERSION_3D_NORMALIZED,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }
     is_hardened_schema = schema_version in {
         DATASET_SCHEMA_VERSION_3D,
         DATASET_SCHEMA_VERSION_3D_HARDENED,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }
+    is_morphology_schema = schema_version == DATASET_SCHEMA_VERSION_3D_MORPHOLOGY
     if arrays["fiber_points_xyz"].shape[1] != 3:
         errors.append(f"{sample_id}: fiber_points_xyz must have xyz columns")
     if arrays["fiber_points_xy"].shape[0] != arrays["fiber_points_xyz"].shape[0]:
@@ -483,7 +603,13 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
     if not np.array_equal(arrays["overlap_count"], expected):
         errors.append(f"{sample_id}: overlap_count does not match sparse memberships")
     semantic_source = metadata["rendering_report"]["semantic_mask_source"]
-    if not np.array_equal(arrays["semantic_mask"], arrays[semantic_source].astype(np.uint8)):
+    if semantic_source == "semantic_class_union":
+        expected_semantic = np.isin(
+            arrays["semantic_class_mask"], [1, 2, 3]
+        ).astype(np.uint8)
+    else:
+        expected_semantic = arrays[semantic_source].astype(np.uint8)
+    if not np.array_equal(arrays["semantic_mask"], expected_semantic):
         errors.append(f"{sample_id}: semantic_mask source mismatch")
     mask = arrays["total_clean_signal"] > 0
     if np.any(arrays["nearest_depth_map"][mask] < 0) or np.any(arrays["weighted_mean_depth_map"][mask] < 0):
@@ -494,9 +620,19 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
     if not (lo <= fwhm <= hi):
         errors.append(f"{sample_id}: width calibration FWHM {fwhm:.3f} outside [{lo}, {hi}]")
     if is_normalized_schema:
-        if not np.array_equal(arrays["trace_points_xy"], arrays["fiber_points_xy"]):
+        if (
+            not is_morphology_schema
+            and not np.array_equal(
+                arrays["trace_points_xy"], arrays["fiber_points_xy"]
+            )
+        ):
             errors.append(f"{sample_id}: trace_points_xy must match projected fiber_points_xy")
-        if not np.array_equal(arrays["trace_point_offsets"], arrays["fiber_point_offsets"]):
+        if (
+            not is_morphology_schema
+            and not np.array_equal(
+                arrays["trace_point_offsets"], arrays["fiber_point_offsets"]
+            )
+        ):
             errors.append(f"{sample_id}: trace offsets must match fiber point offsets")
         if arrays["trace_point_offsets"].ndim != 1:
             errors.append(f"{sample_id}: trace_point_offsets must be one-dimensional")
@@ -626,7 +762,10 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
                         f"{sample_id}: schema 0.3 requires legacy field {old_name}; "
                         "use an explicit migration rather than reinterpretation"
                     )
-        if schema_version == DATASET_SCHEMA_VERSION_3D:
+        if schema_version in {
+            DATASET_SCHEMA_VERSION_3D,
+            DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
+        }:
             report = metadata["rendering_report"]
             if report.get("distance_transform_backend") not in {
                 "scipy_ndimage_distance_transform_edt",
@@ -650,4 +789,124 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
                 errors.append(
                     f"{sample_id}: projected crossing segment-index shape mismatch"
                 )
+        if is_morphology_schema:
+            errors.extend(validate_morphology_arrays(sample_id, arrays, metadata))
+    return errors
+
+
+def validate_morphology_arrays(
+    sample_id: str,
+    arrays: dict[str, np.ndarray],
+    metadata: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    classes = arrays["semantic_class_mask"]
+    allowed = {0, 1, 2, 3, 255}
+    present = set(map(int, np.unique(classes)))
+    if not present <= allowed:
+        errors.append(
+            f"{sample_id}: invalid semantic class IDs {sorted(present - allowed)}"
+        )
+    masks = {
+        1: arrays["individual_filament_mask"],
+        2: arrays["bundle_mask"],
+        3: arrays["clump_mask"],
+        255: arrays["uncertain_ignore_mask"],
+    }
+    for class_id, mask in masks.items():
+        if not np.array_equal(mask, (classes == class_id).astype(np.uint8)):
+            errors.append(
+                f"{sample_id}: class mask {class_id} disagrees with semantic_class_mask"
+            )
+    expected_binary = np.isin(classes, [1, 2, 3]).astype(np.uint8)
+    if not np.array_equal(arrays["semantic_mask"], expected_binary):
+        errors.append(
+            f"{sample_id}: binary semantic mask must equal classes 1/2/3"
+        )
+    if np.any(
+        arrays["filament_centerline_mask"]
+        & ~arrays["individual_filament_mask"]
+    ):
+        errors.append(
+            f"{sample_id}: filament centerline lies outside individual-filament mask"
+        )
+    if np.any(arrays["bundle_axis_mask"] & ~arrays["bundle_mask"]):
+        errors.append(f"{sample_id}: bundle axis lies outside bundle mask")
+    if np.any(arrays["endpoint_map"] & arrays["clump_mask"]):
+        errors.append(f"{sample_id}: clumps contain supervised endpoints")
+    if np.any(arrays["filament_centerline_mask"] & arrays["clump_mask"]):
+        errors.append(f"{sample_id}: clumps contain filament centerlines")
+    for prefix, mask_name in [
+        ("individual_filament", "individual_filament_mask"),
+        ("bundle", "bundle_mask"),
+        ("clump", "clump_mask"),
+    ]:
+        y = arrays[f"{prefix}_membership_y"]
+        x = arrays[f"{prefix}_membership_x"]
+        if y.shape != x.shape or y.shape != arrays[
+            f"{prefix}_membership_instance_id"
+        ].shape:
+            errors.append(f"{sample_id}: malformed {prefix} memberships")
+        elif np.any(arrays[mask_name][y, x] == 0):
+            errors.append(
+                f"{sample_id}: {prefix} membership lies outside class mask"
+            )
+    trace_count = arrays["trace_ids"].shape[0]
+    for name in [
+        "trace_fiber_ids",
+        "trace_status",
+        "trace_start_status",
+        "trace_end_status",
+        "trace_source",
+    ]:
+        if arrays[name].shape != (trace_count,):
+            errors.append(f"{sample_id}: {name} trace-count mismatch")
+    valid_status = set(TRACE_TERMINATION_STATUS_CODES.values())
+    for name in ["trace_start_status", "trace_end_status"]:
+        if not set(map(int, np.unique(arrays[name]))) <= valid_status:
+            errors.append(f"{sample_id}: invalid {name} code")
+    if arrays["fiber_structure_type"].shape != arrays["fiber_ids"].shape:
+        errors.append(f"{sample_id}: fiber structure-type count mismatch")
+    if arrays["fiber_supervised_centerline_sample"].shape[0] != arrays[
+        "fiber_points_xyz"
+    ].shape[0]:
+        errors.append(
+            f"{sample_id}: supervised centerline sample count mismatch"
+        )
+    axis_count = arrays["bundle_axis_points_xyz"].shape[0]
+    for name in ["bundle_axis_points_xy", "bundle_axis_radius_px", "bundle_axis_unresolved_sample"]:
+        if arrays[name].shape[0] != axis_count:
+            errors.append(f"{sample_id}: {name} bundle-axis count mismatch")
+    bundle_count = arrays["bundle_ids"].shape[0]
+    for name in [
+        "bundle_partial_resolution",
+        "bundle_twist_rate",
+        "bundle_converging",
+        "bundle_diverging",
+    ]:
+        if arrays[name].shape != (bundle_count,):
+            errors.append(f"{sample_id}: {name} bundle-count mismatch")
+    clump_count = arrays["clump_ids"].shape[0]
+    for name in [
+        "clump_internal_density",
+        "clump_irregularity",
+        "clump_edge_diffuseness",
+    ]:
+        if arrays[name].shape != (clump_count,):
+            errors.append(f"{sample_id}: {name} clump-count mismatch")
+    for name in ["clump_center_xyz", "clump_radius_xyz"]:
+        if arrays[name].shape != (clump_count, 3):
+            errors.append(f"{sample_id}: {name} clump-count mismatch")
+    target_available = metadata.get("target_available", {})
+    for name in [
+        "semantic_class_mask",
+        "individual_filament_mask",
+        "bundle_mask",
+        "clump_mask",
+        "uncertain_ignore_mask",
+        "filament_centerline_mask",
+        "bundle_axis_mask",
+    ]:
+        if target_available.get(name) is not True:
+            errors.append(f"{sample_id}: target_available missing {name}")
     return errors

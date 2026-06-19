@@ -15,11 +15,14 @@ DATASET_SCHEMA_VERSION_3D_NORMALIZED = "synthetic_sted_3d_rasterizer_0.3.0"
 DATASET_SCHEMA_VERSION_3D_HARDENED = "synthetic_sted_3d_rasterizer_0.4.0"
 DATASET_SCHEMA_VERSION_3D = "synthetic_sted_3d_rasterizer_0.5.0"
 GENERATOR_VERSION_3D = "fibras_persistent_chain_3d_0.5.0"
+DATASET_SCHEMA_VERSION_3D_MORPHOLOGY = "synthetic_sted_3d_morphology_0.6.0"
+GENERATOR_VERSION_3D_MORPHOLOGY = "fibras_morphology_scene_3d_0.6.0"
 
 GENERATOR_MODES = {
     "structural_test_2d",
     "legacy_2d",
     "persistent_chain_3d",
+    "morphology_scene_3d",
 }
 
 NODE_TYPES = {
@@ -49,6 +52,20 @@ TRACE_TERMINATION_STATUSES = {
     "terminates_in_bundle",
     "terminates_in_clump",
     "ambiguous_termination",
+}
+
+TRACE_TERMINATION_STATUS_CODES = {
+    "valid_endpoint": 1,
+    "boundary_truncation": 2,
+    "terminates_in_bundle": 3,
+    "terminates_in_clump": 4,
+    "ambiguous_termination": 5,
+}
+
+FIBER_STRUCTURE_TYPE_CODES = {
+    "individual_filament": 1,
+    "bundle_child": 2,
+    "clump_fragment": 3,
 }
 
 REQUIRED_ARRAYS = {
@@ -149,6 +166,53 @@ REQUIRED_ARRAYS_3D = REQUIRED_ARRAYS_3D_HARDENED | {
     "projected_crossing_fiber_ids",
     "projected_crossing_segment_indices",
 }
+REQUIRED_ARRAYS_3D_MORPHOLOGY = REQUIRED_ARRAYS_3D | {
+    "semantic_class_mask",
+    "individual_filament_mask",
+    "bundle_mask",
+    "clump_mask",
+    "uncertain_ignore_mask",
+    "filament_centerline_mask",
+    "bundle_axis_mask",
+    "bundle_transition_mask",
+    "clump_transition_mask",
+    "individual_filament_membership_y",
+    "individual_filament_membership_x",
+    "individual_filament_membership_instance_id",
+    "bundle_membership_y",
+    "bundle_membership_x",
+    "bundle_membership_instance_id",
+    "clump_membership_y",
+    "clump_membership_x",
+    "clump_membership_instance_id",
+    "bundle_axis_points_xyz",
+    "bundle_axis_points_xy",
+    "bundle_axis_point_offsets",
+    "bundle_axis_radius_px",
+    "bundle_axis_unresolved_sample",
+    "bundle_ids",
+    "bundle_partial_resolution",
+    "bundle_twist_rate",
+    "bundle_converging",
+    "bundle_diverging",
+    "bundle_child_fiber_ids",
+    "bundle_child_fiber_offsets",
+    "clump_ids",
+    "clump_center_xyz",
+    "clump_radius_xyz",
+    "clump_internal_density",
+    "clump_irregularity",
+    "clump_edge_diffuseness",
+    "clump_fragment_fiber_ids",
+    "clump_fragment_fiber_offsets",
+    "fiber_structure_type",
+    "fiber_parent_bundle_id",
+    "fiber_parent_clump_id",
+    "fiber_supervised_centerline_sample",
+    "trace_start_status",
+    "trace_end_status",
+    "trace_fiber_ids",
+}
 
 REQUIRED_ARRAYS_BY_SCHEMA = {
     DATASET_SCHEMA_VERSION: REQUIRED_ARRAYS,
@@ -156,6 +220,7 @@ REQUIRED_ARRAYS_BY_SCHEMA = {
     DATASET_SCHEMA_VERSION_3D_NORMALIZED: REQUIRED_ARRAYS_3D_NORMALIZED,
     DATASET_SCHEMA_VERSION_3D_HARDENED: REQUIRED_ARRAYS_3D_HARDENED,
     DATASET_SCHEMA_VERSION_3D: REQUIRED_ARRAYS_3D,
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY: REQUIRED_ARRAYS_3D_MORPHOLOGY,
 }
 
 

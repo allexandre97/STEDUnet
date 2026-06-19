@@ -13,13 +13,19 @@ import numpy as np
 from fibras.sted_inventory import read_image
 from fibras.synthetic.geometry import generate_geometry, geometry_to_arrays
 from fibras.synthetic.geometry3d import generate_persistent_chain_geometry, geometry3d_to_arrays
+from fibras.synthetic.morphology3d import (
+    generate_morphology_geometry,
+    morphology_geometry_to_arrays,
+)
 from fibras.synthetic.rasterizer3d import rasterize_3d_sample
 from fibras.synthetic.rendering import gaussian_blur, map_to_uint8
 from fibras.synthetic.schema import (
     DATASET_SCHEMA_VERSION,
     DATASET_SCHEMA_VERSION_3D,
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     GENERATOR_VERSION,
     GENERATOR_VERSION_3D,
+    GENERATOR_VERSION_3D_MORPHOLOGY,
     NODE_TYPES,
     REAL_SEMANTIC_CLASSES,
     TRACE_TERMINATION_STATUSES,
@@ -62,8 +68,11 @@ def generate_composites(config: dict[str, Any], inventory_dir: Path, splits_path
     if status not in CALIBRATION_DATA_STATUSES or not status.startswith("exploratory"):
         raise ValueError("this exploratory compositor requires exploratory calibration_data_status")
     sample_count = int(config.get("compositing", {}).get("sample_count", 8))
-    if not (8 <= sample_count <= 16):
-        raise ValueError("sample_count must be 8-16 for bounded output")
+    max_count = (
+        32 if config.get("generator_mode") == "morphology_scene_3d" else 16
+    )
+    if not (8 <= sample_count <= max_count):
+        raise ValueError(f"sample_count must be 8-{max_count} for bounded output")
     split = config.get("compositing", {}).get("synthetic_split", "calibration")
     blank_pool_role = config.get("compositing", {}).get("blank_pool_role", split)
     source_roots = config["source_roots"]
@@ -119,7 +128,10 @@ def build_composite_sample(
     inventory_dir: Path,
     splits_path: Path,
 ) -> tuple[str, dict[str, np.ndarray], dict[str, Any]]:
-    if config.get("generator_mode") == "persistent_chain_3d":
+    if config.get("generator_mode") in {
+        "persistent_chain_3d",
+        "morphology_scene_3d",
+    }:
         return build_composite_sample_3d(config, blank_row, source_roots, sample_index, inventory_dir, splits_path)
     compositor_config = config.get("compositing", {})
     geometry_config = config["geometry"].copy()
@@ -205,9 +217,18 @@ def build_composite_sample_3d(
         rendering_seed = int(output_config.get("base_seed", 62001)) + sample_index
         local_config = dict(config)
         local_config["geometry"] = geometry_config
-        geometry = generate_persistent_chain_geometry(geometry_config, sample_index)
-        arrays: dict[str, np.ndarray] = {}
-        arrays.update(geometry3d_to_arrays(geometry))
+        if config.get("generator_mode") == "morphology_scene_3d":
+            local_config = dict(config)
+            local_config["geometry"] = geometry_config
+            geometry = generate_morphology_geometry(local_config, sample_index)
+            arrays = morphology_geometry_to_arrays(
+                geometry, geometry3d_to_arrays(geometry)
+            )
+        else:
+            geometry = generate_persistent_chain_geometry(
+                geometry_config, sample_index
+            )
+            arrays = geometry3d_to_arrays(geometry)
         raster_output = dict(output_config)
         raster_output["background_level"] = 0.0
         raster_output["background_noise_std"] = 0.0
@@ -222,7 +243,10 @@ def build_composite_sample_3d(
         parent_metadata = {}
         parent_row = {}
     compositing_seed = int(compositor_config.get("base_seed", 63001)) + sample_index
-    signal = arrays["total_clean_signal"].astype(np.float32) * float(compositor_config.get("foreground_scale", 1.0))
+    foreground_scale = composite_foreground_scale(
+        compositor_config, compositing_seed
+    )
+    signal = arrays["total_clean_signal"].astype(np.float32) * foreground_scale
     perturb_scale = float(config.get("real_blank_rendering", {}).get("signal_dependent_perturbation_scale", 0.0))
     if perturb_scale > 0:
         rng = np.random.default_rng(compositing_seed)
@@ -255,6 +279,18 @@ def build_composite_sample_3d(
     return sample_id, arrays, metadata
 
 
+def composite_foreground_scale(
+    config: dict[str, Any], compositing_seed: int
+) -> float:
+    value = config.get("foreground_scale_range")
+    if value is None:
+        return float(config.get("foreground_scale", 1.0))
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError("foreground_scale_range must contain [min, max]")
+    rng = np.random.default_rng(compositing_seed)
+    return float(rng.uniform(float(value[0]), float(value[1])))
+
+
 def composite_metadata(
     sample_id: str,
     config: dict[str, Any],
@@ -272,7 +308,23 @@ def composite_metadata(
     parent_row: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     status = config.get("calibration_data_status", "exploratory_unpartitioned")
-    is_3d = config.get("generator_mode") == "persistent_chain_3d"
+    mode = config.get("generator_mode")
+    is_3d = mode in {"persistent_chain_3d", "morphology_scene_3d"}
+    is_morphology = mode == "morphology_scene_3d"
+    schema_version = (
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY
+        if is_morphology
+        else DATASET_SCHEMA_VERSION_3D
+        if is_3d
+        else DATASET_SCHEMA_VERSION
+    )
+    generator_version = (
+        GENERATOR_VERSION_3D_MORPHOLOGY
+        if is_morphology
+        else GENERATOR_VERSION_3D
+        if is_3d
+        else GENERATOR_VERSION
+    )
     metadata = artifact_metadata(
         inventory_dir=inventory_dir,
         splits_path=splits_path,
@@ -284,17 +336,30 @@ def composite_metadata(
     metadata.update(
         {
             "sample_id": sample_id,
-            "dataset_schema_version": DATASET_SCHEMA_VERSION_3D if is_3d else DATASET_SCHEMA_VERSION,
+            "dataset_schema_version": schema_version,
             "calibration_artifact_schema_version": CALIBRATION_SCHEMA_VERSION,
-            "generator_version": GENERATOR_VERSION_3D if is_3d else GENERATOR_VERSION,
+            "generator_version": generator_version,
             "generator_mode": config.get("generator_mode", "legacy_2d"),
             "geometry_seed": geometry_seed,
             "rendering_seed": rendering_seed,
             "compositing_seed": compositing_seed,
             "geometry_parameters": geometry["parameters"],
+            "scenario": (parent_metadata or {}).get(
+                "scenario", geometry["parameters"].get("scenario", "not_reported")
+            ),
+            "scenario_category": (parent_metadata or {}).get(
+                "scenario_category",
+                (render_report or {}).get(
+                    "scenario_category", "realism_calibration"
+                ),
+            ),
             "renderer_configuration": config.get("optical_model", config.get("real_blank_rendering", {})),
             "output_mapping_configuration": config.get("output_mapping", config.get("real_blank_rendering", {})),
             "compositor_configuration": config.get("compositing", {}),
+            "applied_compositor_foreground_scale": float(
+                arrays["synthetic_signal_float"].sum()
+                / max(float(arrays.get("total_clean_signal", arrays["synthetic_signal_float"]).sum()), 1e-12)
+            ),
             "source_blank_provenance": {
                 "source_root_id": blank_row["source_root_id"],
                 "blank_stable_image_id": blank_row["stable_image_id"],
@@ -326,6 +391,9 @@ def composite_metadata(
             "parent_synthetic_sample_id": (parent_metadata or {}).get("sample_id", "generated_in_memory"),
             "source_synthetic_artifact_hash": (parent_row or {}).get("npz_sha256", "not_recorded"),
             "composite_schema_version": CALIBRATION_SCHEMA_VERSION,
+            "width_calibration": (parent_metadata or {}).get(
+                "width_calibration", {}
+            ),
         }
     )
     if render_report is not None:
@@ -345,7 +413,13 @@ def composite_metadata(
                     "synthetic_only_targets_optional_for_real_samples": ["fiber_points_xyz", "nearest_depth_map", "weighted_mean_depth_map", "in_focus_signal", "out_of_focus_signal"],
                     "reserved_real_semantic_classes": REAL_SEMANTIC_CLASSES,
                     "reserved_trace_termination_statuses": sorted(TRACE_TERMINATION_STATUSES),
-                    "current_binary_semantic_mask": True,
+                    "current_binary_semantic_mask": not is_morphology,
+                    "multiclass_semantic_mask": is_morphology,
+                    "binary_compatibility_mask": (
+                        "union of semantic classes 1, 2, and 3"
+                        if is_morphology
+                        else "semantic_mask"
+                    ),
                 },
                 "foreground_signal_convention": "arc-length weighted empirical line density convolved with unit-integral discrete PSF before real-blank addition",
             }
@@ -380,7 +454,11 @@ def validate_composites(dataset_dir: Path) -> list[str]:
             if arr.dtype == object:
                 errors.append(f"{row['sample_id']}: object dtype prohibited for {name}")
         semantic_source = meta.get("target_provenance", {}).get("semantic_mask_source")
-        if semantic_source and semantic_source in arrays:
+        if semantic_source == "semantic_class_union":
+            expected_semantic = np.isin(
+                arrays["semantic_class_mask"], [1, 2, 3]
+            ).astype(np.uint8)
+        elif semantic_source and semantic_source in arrays:
             expected_semantic = arrays[semantic_source].astype(np.uint8)
         else:
             expected_semantic = (arrays["overlap_count"] > 0).astype(np.uint8)

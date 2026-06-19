@@ -12,6 +12,7 @@ import numpy as np
 from .schema import (
     DATASET_SCHEMA_VERSION_3D,
     DATASET_SCHEMA_VERSION_3D_HARDENED,
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
 )
 
 
@@ -108,6 +109,7 @@ def validate_parent(
     compatible = {
         DATASET_SCHEMA_VERSION_3D_HARDENED,
         DATASET_SCHEMA_VERSION_3D,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }
     parent_schema = parent_meta.get("dataset_schema_version")
     composite_schema = composite_meta.get("dataset_schema_version")

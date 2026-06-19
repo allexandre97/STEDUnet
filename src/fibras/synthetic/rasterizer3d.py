@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover - exercised only if scipy is absent.
 
 from .geometry3d import generate_persistent_chain_geometry
 from .rendering import map_to_uint8
-from .schema import NODE_TYPES
+from .schema import NODE_TYPES, TRACE_TERMINATION_STATUS_CODES
 from .targets import draw_disk, segment_intersection
 
 
@@ -43,8 +43,16 @@ def rasterize_3d_sample(
     target_arrays, target_report = geometry_targets_3d(geometry, targets_config, focal_depth)
     signal_arrays, signal_report = splat_geometry_signal(geometry, optical_config, visible_threshold, foreground_scale)
     arrays = {**target_arrays, **signal_arrays}
-    arrays["semantic_mask"] = select_semantic_mask(arrays, targets_config)
-    arrays["ignore_mask"] = build_ignore_mask(arrays, targets_config, visible_threshold)
+    if "semantic_class_mask" in arrays:
+        arrays["semantic_mask"] = np.isin(
+            arrays["semantic_class_mask"], [1, 2, 3]
+        ).astype(np.uint8)
+        arrays["ignore_mask"] = arrays["uncertain_ignore_mask"].copy()
+    else:
+        arrays["semantic_mask"] = select_semantic_mask(arrays, targets_config)
+        arrays["ignore_mask"] = build_ignore_mask(
+            arrays, targets_config, visible_threshold
+        )
     optional_report = apply_optional_targets(arrays, targets_config)
 
     render = arrays["total_clean_signal"].astype(np.float32) + float(output_config.get("background_level", 4.0))
@@ -63,8 +71,12 @@ def rasterize_3d_sample(
         **optional_report,
         **mapping,
         "float_to_uint8_mapping": mapping,
-        "semantic_mask_source": targets_config.get("semantic_mask_source", "visible_signal_mask"),
-        "ignore_mask_rule": targets_config.get("ignore_mask_rule", "none"),
+        "semantic_mask_source": "semantic_class_union"
+        if "semantic_class_mask" in arrays
+        else targets_config.get("semantic_mask_source", "visible_signal_mask"),
+        "ignore_mask_rule": "morphology_transition_uncertainty"
+        if "semantic_class_mask" in arrays
+        else targets_config.get("ignore_mask_rule", "none"),
         "scenario": geometry["parameters"].get("scenario", "random_persistent_chain"),
         "scenario_category": scenario_category(geometry["parameters"].get("scenario", "random_persistent_chain"), targets_config),
         "image_shape": [height, width],
@@ -79,6 +91,12 @@ def rasterize_3d_sample(
 
 
 def geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_depth: float) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    if "bundles" in geometry and "clumps" in geometry:
+        return morphology_targets_3d(geometry, config, focal_depth)
+    return standard_geometry_targets_3d(geometry, config, focal_depth)
+
+
+def standard_geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_depth: float) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     height, width = geometry["image_shape"]
     centerline_radius = float(config.get("centerline_radius_px", 0.75))
     endpoint_radius = float(config.get("endpoint_radius_px", 3.0))
@@ -212,6 +230,303 @@ def geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_
             "method": "uniform_grid_candidate_pruning",
         },
     }
+
+
+def morphology_targets_3d(
+    geometry: dict[str, Any],
+    config: dict[str, Any],
+    focal_depth: float,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    arrays, report = standard_geometry_targets_3d(
+        geometry, config, focal_depth
+    )
+    shape = tuple(geometry["image_shape"])
+    centerline_radius = float(config.get("centerline_radius_px", 0.75))
+    axis_radius = float(config.get("bundle_axis_radius_px", 1.0))
+    transition_radius = float(config.get("transition_radius_px", 3.0))
+    mark_transitions = bool(config.get("mark_transitions_uncertain", True))
+    individual_raw = np.zeros(shape, dtype=np.uint8)
+    bundle_raw = np.zeros(shape, dtype=np.uint8)
+    clump_raw = np.zeros(shape, dtype=np.uint8)
+    bundle_axis = np.zeros(shape, dtype=np.uint8)
+    bundle_transition = np.zeros(shape, dtype=np.uint8)
+    clump_transition = np.zeros(shape, dtype=np.uint8)
+    filament_centerline = np.zeros(shape, dtype=np.uint8)
+    endpoint_map = np.zeros(shape, dtype=np.uint8)
+    orientation_cos_sum = np.zeros(shape, dtype=np.float32)
+    orientation_sin_sum = np.zeros(shape, dtype=np.float32)
+    orientation_instances = np.zeros(shape, dtype=np.uint16)
+    orientation_valid_instances = np.zeros(shape, dtype=np.uint16)
+    orientation_invalid_instances = np.zeros(shape, dtype=np.uint16)
+    individual_memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    trace_points: list[np.ndarray] = []
+    trace_offsets = [0]
+    trace_ids: list[int] = []
+    trace_fiber_ids: list[int] = []
+    trace_start_status: list[int] = []
+    trace_end_status: list[int] = []
+
+    for fiber in geometry["fibers"]:
+        structure = fiber.get("structure_type", "individual_filament")
+        points = fiber["points_xyz"]
+        radii = fiber["sample_radius"]
+        supervised = fiber.get(
+            "supervised_centerline_sample",
+            np.ones(len(points), dtype=np.uint8),
+        ).astype(bool)
+        if structure in {"individual_filament", "bundle_child"} and np.any(
+            supervised
+        ):
+            support = rasterize_variable_disks(
+                points[supervised, :2], radii[supervised], shape
+            )
+            individual_raw |= support.astype(np.uint8)
+            y, x = np.nonzero(support)
+            individual_memberships.append(
+                (
+                    y.astype(np.int32),
+                    x.astype(np.int32),
+                    np.full(y.shape, int(fiber["fiber_id"]), dtype=np.int32),
+                )
+            )
+            for start, end in contiguous_true_runs(supervised):
+                segment = points[start:end, :2]
+                if len(segment) < 2:
+                    continue
+                line = rasterize_variable_disks(
+                    segment,
+                    np.full(len(segment), centerline_radius, dtype=np.float32),
+                    shape,
+                )
+                filament_centerline |= line.astype(np.uint8)
+                add_orientation_contribution(
+                    orientation_cos_sum,
+                    orientation_sin_sum,
+                    orientation_instances,
+                    orientation_valid_instances,
+                    orientation_invalid_instances,
+                    segment,
+                    centerline_radius,
+                    float(config.get("orientation_consensus_threshold", 0.95)),
+                )
+                start_name = (
+                    fiber.get("trace_start_status", "valid_endpoint")
+                    if start == 0
+                    else "terminates_in_bundle"
+                )
+                end_name = (
+                    fiber.get("trace_end_status", "valid_endpoint")
+                    if end == len(points)
+                    else "terminates_in_bundle"
+                )
+                if start_name == "valid_endpoint":
+                    draw_disk(endpoint_map, segment[0], float(config.get("endpoint_radius_px", 3.0)))
+                if end_name == "valid_endpoint":
+                    draw_disk(endpoint_map, segment[-1], float(config.get("endpoint_radius_px", 3.0)))
+                trace_points.append(segment.astype(np.float32))
+                trace_offsets.append(trace_offsets[-1] + len(segment))
+                trace_ids.append(len(trace_ids) + 1)
+                trace_fiber_ids.append(int(fiber["fiber_id"]))
+                trace_start_status.append(
+                    TRACE_TERMINATION_STATUS_CODES[start_name]
+                )
+                trace_end_status.append(
+                    TRACE_TERMINATION_STATUS_CODES[end_name]
+                )
+        if (
+            structure == "individual_filament"
+            and fiber.get("trace_end_status") == "terminates_in_clump"
+        ):
+            draw_disk(clump_transition, points[-1, :2], transition_radius)
+
+    bundle_memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    for bundle in geometry["bundles"]:
+        axis = bundle["axis_points_xyz"]
+        radii = bundle["axis_radius_px"]
+        unresolved = bundle["unresolved_sample"].astype(bool)
+        if np.any(unresolved):
+            mask = rasterize_variable_disks(
+                axis[unresolved, :2], radii[unresolved], shape
+            )
+            bundle_raw |= mask.astype(np.uint8)
+            y, x = np.nonzero(mask)
+            bundle_memberships.append(
+                (
+                    y.astype(np.int32),
+                    x.astype(np.int32),
+                    np.full(
+                        y.shape, int(bundle["bundle_id"]), dtype=np.int32
+                    ),
+                )
+            )
+        bundle_axis |= rasterize_variable_disks(
+            axis[:, :2],
+            np.full(len(axis), axis_radius, dtype=np.float32),
+            shape,
+        ).astype(np.uint8)
+        changes = np.flatnonzero(np.diff(unresolved.astype(np.int8)) != 0)
+        for index in changes:
+            draw_disk(bundle_transition, axis[index, :2], transition_radius)
+
+    clump_memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    fibers_by_id = {
+        int(fiber["fiber_id"]): fiber for fiber in geometry["fibers"]
+    }
+    for clump in geometry["clumps"]:
+        mask = np.zeros(shape, dtype=bool)
+        scale = float(clump.get("edge_diffuseness", 1.0)) * 1.7
+        for fid in clump["fragment_fiber_ids"]:
+            fiber = fibers_by_id[int(fid)]
+            mask |= rasterize_variable_disks(
+                fiber["points_xyz"][:, :2],
+                fiber["sample_radius"] * scale,
+                shape,
+            )
+        if scipy_ndimage is not None and np.any(mask):
+            mask = scipy_ndimage.binary_closing(mask, iterations=2)
+            mask = scipy_ndimage.binary_fill_holes(mask)
+        clump_raw |= mask.astype(np.uint8)
+        y, x = np.nonzero(mask)
+        clump_memberships.append(
+            (
+                y.astype(np.int32),
+                x.astype(np.int32),
+                np.full(y.shape, int(clump["clump_id"]), dtype=np.int32),
+            )
+        )
+
+    semantic_class = np.zeros(shape, dtype=np.uint8)
+    semantic_class[individual_raw.astype(bool)] = 1
+    semantic_class[bundle_raw.astype(bool)] = 2
+    semantic_class[clump_raw.astype(bool)] = 3
+    uncertain = np.zeros(shape, dtype=np.uint8)
+    if mark_transitions:
+        uncertain = (
+            (bundle_transition.astype(bool) | clump_transition.astype(bool))
+            & (semantic_class > 0)
+        ).astype(np.uint8)
+        semantic_class[uncertain.astype(bool)] = 255
+    individual = (semantic_class == 1).astype(np.uint8)
+    bundle = (semantic_class == 2).astype(np.uint8)
+    clump = (semantic_class == 3).astype(np.uint8)
+    filament_centerline &= individual
+    bundle_axis &= bundle
+    endpoint_map &= individual
+    arrays["projected_crossing_map"] &= individual
+    arrays["crossing_map"] = arrays["projected_crossing_map"].copy()
+    arrays["near_coplanar_crossing_map"] &= individual
+    orientation_arrays = finalize_orientation_field(
+        orientation_cos_sum,
+        orientation_sin_sum,
+        orientation_instances,
+        orientation_valid_instances,
+        orientation_invalid_instances,
+        config,
+    )
+    arrays.update(
+        {
+            "semantic_class_mask": semantic_class,
+            "individual_filament_mask": individual,
+            "bundle_mask": bundle,
+            "clump_mask": clump,
+            "uncertain_ignore_mask": uncertain,
+            "filament_centerline_mask": filament_centerline,
+            "centerline_mask": filament_centerline.copy(),
+            "bundle_axis_mask": bundle_axis,
+            "bundle_transition_mask": bundle_transition,
+            "clump_transition_mask": clump_transition,
+            "endpoint_map": endpoint_map,
+            "trace_points_xy": np.vstack(trace_points).astype(np.float32)
+            if trace_points
+            else np.zeros((0, 2), dtype=np.float32),
+            "trace_point_offsets": np.asarray(trace_offsets, dtype=np.int32),
+            "trace_ids": np.asarray(trace_ids, dtype=np.int32),
+            "trace_fiber_ids": np.asarray(trace_fiber_ids, dtype=np.int32),
+            "trace_status": np.asarray(
+                [
+                    max(start, end)
+                    for start, end in zip(
+                        trace_start_status, trace_end_status
+                    )
+                ],
+                dtype=np.int16,
+            ),
+            "trace_start_status": np.asarray(
+                trace_start_status, dtype=np.int16
+            ),
+            "trace_end_status": np.asarray(trace_end_status, dtype=np.int16),
+            "trace_source": np.ones(len(trace_ids), dtype=np.int16),
+            **membership_arrays(
+                "individual_filament",
+                filter_memberships(individual_memberships, individual),
+            ),
+            **membership_arrays(
+                "bundle", filter_memberships(bundle_memberships, bundle)
+            ),
+            **membership_arrays(
+                "clump", filter_memberships(clump_memberships, clump)
+            ),
+            **orientation_arrays,
+        }
+    )
+    report.update(
+        {
+            "semantic_class_contract": {
+                "0": "background",
+                "1": "individual_filament",
+                "2": "bundle",
+                "3": "clump",
+                "255": "uncertain_ignore",
+            },
+            "class_priority": [
+                "individual_filament",
+                "bundle_over_individual_filament",
+                "clump_over_bundle_and_individual_filament",
+                "uncertain_ignore_over_all_classes",
+            ],
+            "binary_semantic_mask_source": "union of semantic classes 1, 2, and 3; class 255 excluded",
+            "supervised_centerline_source": "traceable individual-filament regions only; hidden bundle children and clump fragments excluded",
+            "bundle_axis_semantics": "optional bundle-level axis; never an individual-filament centerline",
+            "transition_semantics": "configured bundle/clump transition disks become uncertain_ignore and trace termination statuses",
+        }
+    )
+    return arrays, report
+
+
+def contiguous_true_runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    padded = np.pad(mask.astype(np.int8), (1, 1))
+    changes = np.diff(padded)
+    starts = np.flatnonzero(changes == 1)
+    ends = np.flatnonzero(changes == -1)
+    return list(zip(starts.tolist(), ends.tolist()))
+
+
+def membership_arrays(
+    prefix: str,
+    memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+) -> dict[str, np.ndarray]:
+    if memberships:
+        y = np.concatenate([item[0] for item in memberships])
+        x = np.concatenate([item[1] for item in memberships])
+        ids = np.concatenate([item[2] for item in memberships])
+    else:
+        y = x = ids = np.zeros(0, dtype=np.int32)
+    return {
+        f"{prefix}_membership_y": y.astype(np.int32),
+        f"{prefix}_membership_x": x.astype(np.int32),
+        f"{prefix}_membership_instance_id": ids.astype(np.int32),
+    }
+
+
+def filter_memberships(
+    memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    class_mask: np.ndarray,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    output = []
+    for y, x, ids in memberships:
+        keep = class_mask[y, x].astype(bool)
+        output.append((y[keep], x[keep], ids[keep]))
+    return output
 
 
 def splat_geometry_signal(
@@ -736,6 +1051,8 @@ def projected_crossings_grid(geometry: dict[str, Any], cell_size: float = 32.0) 
     shared = {int(edge["fiber_id"]): set(map(int, edge["node_indices"])) for edge in geometry["edges"]}
     segments = []
     for fiber in geometry["fibers"]:
+        if not fiber.get("crossing_eligible", True):
+            continue
         fid = int(fiber["fiber_id"])
         for seg_index, (p0, p1) in enumerate(zip(fiber["points_xyz"][:-1], fiber["points_xyz"][1:])):
             segments.append((fid, seg_index, p0, p1))
@@ -787,7 +1104,14 @@ def projected_crossings_grid(geometry: dict[str, Any], cell_size: float = 32.0) 
 def projected_crossings_bruteforce(geometry: dict[str, Any]) -> list[dict[str, np.ndarray]]:
     shared = {int(edge["fiber_id"]): set(map(int, edge["node_indices"])) for edge in geometry["edges"]}
     detections: list[dict[str, np.ndarray]] = []
-    fibers = sorted(geometry["fibers"], key=lambda fiber: int(fiber["fiber_id"]))
+    fibers = sorted(
+        [
+            fiber
+            for fiber in geometry["fibers"]
+            if fiber.get("crossing_eligible", True)
+        ],
+        key=lambda fiber: int(fiber["fiber_id"]),
+    )
     for i, fa in enumerate(fibers):
         for fb in fibers[i + 1 :]:
             if shared.get(int(fa["fiber_id"]), set()) & shared.get(int(fb["fiber_id"]), set()):
@@ -922,6 +1246,26 @@ def apply_optional_targets(arrays: dict[str, np.ndarray], config: dict[str, Any]
         "depth_maps": True,
         "optical_signal_decomposition": True,
     }
+    if "semantic_class_mask" in arrays:
+        target_available.update(
+            {
+                "semantic_class_mask": True,
+                "individual_filament_mask": True,
+                "bundle_mask": True,
+                "clump_mask": True,
+                "uncertain_ignore_mask": True,
+                "filament_centerline_mask": True,
+                "bundle_axis_mask": True,
+                "bundle_transition_mask": True,
+                "clump_transition_mask": True,
+                "individual_filament_instance_membership": True,
+                "bundle_instance_membership": True,
+                "clump_instance_membership": True,
+                "bundle_axis_vectors": True,
+                "latent_bundle_children": True,
+                "latent_clump_fragments": True,
+            }
+        )
     if target_available["background_distance_to_semantic_foreground"]:
         start = time.perf_counter()
         arrays["background_distance_to_semantic_foreground"] = background_distance_to_foreground(arrays["semantic_mask"])

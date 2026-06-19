@@ -119,7 +119,7 @@ The authoritative visibility threshold is `optical_model.visible_signal_threshol
 
 PSF component weights use `weights_sum_to_one`. Core-plus-halo weights must be finite, nonnegative, have positive total, and sum to one without implicit normalization.
 
-The future real-annotation vocabulary is defined in `docs/real_annotation_contract.md`. The current synthetic semantic target remains binary and does not simulate bundles or clumps.
+The shared real-annotation vocabulary is defined in `docs/real_annotation_contract.md`. The normalized production path remains schema 0.5 and binary. The separate exploratory morphology path uses schema `synthetic_sted_3d_morphology_0.6.0` with background, individual-filament, bundle, clump, and uncertain/ignore classes.
 
 Generate the normalized 3D review set with:
 
@@ -148,6 +148,27 @@ python scripts/generate_synthetic_examples.py \
 ```
 
 Only `scenario_category: realism_calibration` samples should enter real-versus-synthetic appearance statistics.
+
+## Morphology heterogeneity review
+
+The condition-blind `morphology_scene_3d` mode adds spatial domains, isolated and clustered filaments, explicit correlated bundles, compact clumps, and mixed transition scenes. It does not read culture, disease, tau isoform, or DIV metadata. Real-image morphology measurements remain coarse diagnostics rather than generator-fitting targets.
+
+```bash
+python scripts/generate_synthetic_examples.py \
+  --config configs/synthetic_sted/morphology_heterogeneity_review.yaml \
+  --out examples/synthetic_sted_morphology_review
+
+python scripts/generate_blank_composite_examples.py \
+  --config configs/synthetic_sted/morphology_heterogeneity_review.yaml \
+  --inventory-dir data_manifests \
+  --splits data_manifests/sted_splits.csv \
+  --out examples/sted_blank_composites_morphology_review
+
+python scripts/build_morphology_review.py \
+  --config configs/synthetic_sted/morphology_heterogeneity_review.yaml
+```
+
+The multiclass `semantic_class_mask` uses values `0`, `1`, `2`, `3`, and `255`. `semantic_mask` is the compatibility union of valid foreground classes 1–3. Bundle axes are bundle-level targets, not filament centerlines. Hidden bundle children and clump fragments remain synthetic-only latent geometry. Structural targets do not depend on the exploratory composite foreground scale, sampled from 1.0–2.0 for review examples.
 
 ## Real-blank compositing and blank QA
 
