@@ -26,6 +26,9 @@ def main() -> int:
     parser.add_argument("--artificial-dir", required=True, type=Path)
     parser.add_argument("--composite-dir", required=True, type=Path)
     parser.add_argument("--pure-blank-dir", type=Path)
+    parser.add_argument("--structural-qa-dir", type=Path)
+    parser.add_argument("--optical-qa-dir", type=Path)
+    parser.add_argument("--review-package-dir", type=Path)
     parser.add_argument("--allow-qa-in-calibration", action="store_true")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
@@ -60,7 +63,17 @@ def main() -> int:
     summary["groups"]["real_blank_composite"] = aggregate_numeric(composite, fields)
     summary["groups"]["real_blank_composite_delta_vs_source_blank"] = aggregate_numeric(matched, ["delta_p50", "delta_p95", "delta_p99", "delta_mean", "delta_variance", "delta_zero_fraction", "delta_local_variance_p50", "foreground_added_integrated_signal"])
     write_json(summary_path, summary)
-    build_report(args.artifact_dir, args.artificial_dir, args.composite_dir, args.out, config, args.pure_blank_dir)
+    build_report(
+        args.artifact_dir,
+        args.artificial_dir,
+        args.composite_dir,
+        args.out,
+        config,
+        args.pure_blank_dir,
+        args.structural_qa_dir,
+        args.optical_qa_dir,
+        args.review_package_dir,
+    )
     return 0
 
 

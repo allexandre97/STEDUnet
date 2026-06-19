@@ -41,6 +41,16 @@ def main() -> int:
                 errors.append(f"invalid calibration_status: {status}")
             if not status.startswith("exploratory"):
                 errors.append("calibration artifacts must remain exploratory in this phase")
+            for field in [
+                "source_commit_sha",
+                "working_tree_dirty",
+                "generation_config_sha256",
+                "inventory_manifest_sha256",
+                "split_manifest_sha256",
+                "blank_pool_manifest_sha256",
+            ]:
+                if field not in summary["metadata"]:
+                    errors.append(f"missing calibration provenance field: {field}")
     if args.composite_dir:
         errors.extend(validate_composites(args.composite_dir))
     if args.pure_blank_dir:

@@ -114,6 +114,10 @@ Distance and source fields are explicitly named:
 
 Visible instance provenance is split into individual visible memberships, all contributing memberships, and `combined_only_visible_mask` for summed-subthreshold visibility.
 
+The reserved multiclass real-annotation and trace-termination vocabulary is defined in `docs/real_annotation_contract.md`. Current synthetic masks remain binary; bundle and clump simulation is intentionally deferred.
+
+Calibration artifacts record the full source commit SHA, dirty-worktree state, configuration SHA-256, and inventory, split, and blank-pool manifest SHA-256 values separately. A dirty generation is reported as dirty rather than presented as a clean revision.
+
 ## Blank pools and pure blank QA
 
 Blank backgrounds are assigned to provisional roles in `data_manifests/sted_blank_pools.csv`. The roles are independent of disease/DIV split logic:

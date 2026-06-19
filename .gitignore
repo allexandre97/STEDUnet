@@ -64,6 +64,9 @@ reports/sted_blank_composite_visuals/
 reports/sted_blank_composite_3d_normalized_visuals/
 reports/sted_blank_composite_3d_realism_visuals/
 reports/synthetic_mvp_visuals/
+reports/review_package/*
+!reports/review_package/README.md
+!reports/review_package/*.png
 
 # ----------------------------------------------------------------------
 # Archives and temporary output

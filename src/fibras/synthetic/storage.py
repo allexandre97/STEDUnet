@@ -18,14 +18,17 @@ from .schema import (
     CALIBRATION_STATUSES,
     DATASET_SCHEMA_VERSION,
     DATASET_SCHEMA_VERSION_3D,
+    DATASET_SCHEMA_VERSION_3D_HARDENED,
     DATASET_SCHEMA_VERSION_3D_LEGACY,
     DATASET_SCHEMA_VERSION_3D_NORMALIZED,
     GENERATOR_MODES,
     GENERATOR_VERSION,
     GENERATOR_VERSION_3D,
     NODE_TYPES,
+    REAL_SEMANTIC_CLASSES,
     REQUIRED_ARRAYS,
     REQUIRED_ARRAYS_BY_SCHEMA,
+    TRACE_TERMINATION_STATUSES,
 )
 from .targets import rasterize_targets
 
@@ -163,7 +166,7 @@ def metadata_for_sample_3d(
         "sample_id": sample_id,
         "sample_index": sample_index,
         "dataset_schema_version": DATASET_SCHEMA_VERSION_3D,
-        "schema_migration": "0.4.0 hardening: boundary-clipped PSF energy is lost after full-kernel unit normalization; source_float was replaced by line_source_float and geometric_support_preview; distance_transform was renamed to background_distance_to_semantic_foreground; optional targets are controlled by metadata target_available",
+        "schema_migration": "0.5.0 adds projected_crossing_fiber_ids and projected_crossing_segment_indices; 0.4.0 source, distance, orientation, membership, and PSF conventions are unchanged",
         "generator_version": GENERATOR_VERSION_3D,
         "generator_mode": "persistent_chain_3d",
         "geometry_seed": geometry_seed,
@@ -222,6 +225,10 @@ def metadata_for_sample_3d(
             "trace_source_codes": {"projected_3d_ground_truth": 1},
             "coordinate_convention": "zero-based x_y pixel-equivalent coordinates with pixel-center convention matching synthetic arrays",
             "synthetic_only_targets": ["fiber_points_xyz", "nearest_depth_map", "weighted_mean_depth_map", "in_focus_signal", "out_of_focus_signal", "total_optical_signal"],
+            "reserved_real_semantic_classes": REAL_SEMANTIC_CLASSES,
+            "reserved_trace_termination_statuses": sorted(TRACE_TERMINATION_STATUSES),
+            "current_binary_semantic_mask": True,
+            "bundle_and_clump_generation": "not_implemented",
         },
         "patch_provenance_schema": {
             "parent_sample_id": "not_applicable_for_full_image",
@@ -322,13 +329,74 @@ def validate_dataset(out_dir: Path, deterministic: bool = True) -> list[str]:
         with np.load(npz_path, allow_pickle=False) as data:
             arrays = {name: data[name] for name in data.files}
         errors.extend(validate_sample_arrays(row["sample_id"], arrays, metadata))
-        if deterministic:
-            _, rebuilt, _ = build_sample(metadata["generation_config"], int(metadata["sample_index"]))
-            required = REQUIRED_ARRAYS_BY_SCHEMA.get(metadata.get("dataset_schema_version"), REQUIRED_ARRAYS)
-            for name in required:
-                if not np.array_equal(arrays[name], rebuilt[name]):
-                    errors.append(f"{row['sample_id']}: deterministic regeneration mismatch for {name}")
-                    break
+        if deterministic and metadata.get("dataset_schema_version") == DATASET_SCHEMA_VERSION_3D:
+            _, rebuilt, rebuilt_metadata = build_sample(
+                metadata["generation_config"], int(metadata["sample_index"])
+            )
+            errors.extend(
+                compare_complete_artifact(
+                    row["sample_id"], arrays, metadata, rebuilt, rebuilt_metadata
+                )
+            )
+    return errors
+
+
+def compare_complete_artifact(
+    sample_id: str,
+    arrays: dict[str, np.ndarray],
+    metadata: dict[str, Any],
+    rebuilt: dict[str, np.ndarray],
+    rebuilt_metadata: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    stored_names = set(arrays)
+    rebuilt_names = set(rebuilt)
+    if stored_names != rebuilt_names:
+        missing = sorted(rebuilt_names - stored_names)
+        unexpected = sorted(stored_names - rebuilt_names)
+        errors.append(
+            f"{sample_id}: deterministic array-name mismatch; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    for name in sorted(stored_names & rebuilt_names):
+        stored = arrays[name]
+        expected = rebuilt[name]
+        if stored.dtype != expected.dtype:
+            errors.append(
+                f"{sample_id}: deterministic dtype mismatch for {name}: "
+                f"{stored.dtype} != {expected.dtype}"
+            )
+        elif stored.shape != expected.shape:
+            errors.append(
+                f"{sample_id}: deterministic shape mismatch for {name}: "
+                f"{stored.shape} != {expected.shape}"
+            )
+        elif not np.array_equal(stored, expected):
+            errors.append(f"{sample_id}: deterministic value mismatch for {name}")
+    if set(metadata.get("array_names", [])) != stored_names:
+        errors.append(f"{sample_id}: metadata array_names do not match stored arrays")
+    expected_dtypes = {name: str(array.dtype) for name, array in arrays.items()}
+    expected_shapes = {name: list(array.shape) for name, array in arrays.items()}
+    if metadata.get("dtypes") != expected_dtypes:
+        errors.append(f"{sample_id}: metadata dtypes do not match stored arrays")
+    if metadata.get("shapes") != expected_shapes:
+        errors.append(f"{sample_id}: metadata shapes do not match stored arrays")
+    for key in ["target_available", "scenario", "scenario_category"]:
+        if metadata.get(key) != rebuilt_metadata.get(key):
+            errors.append(f"{sample_id}: deterministic metadata mismatch for {key}")
+    for key in [
+        "semantic_mask_source",
+        "ignore_mask_rule",
+        "psf_normalization",
+        "psf_component_weight_convention",
+        "distance_transform_backend",
+    ]:
+        stored_value = metadata.get("rendering_report", {}).get(key)
+        rebuilt_value = rebuilt_metadata.get("rendering_report", {}).get(key)
+        if stored_value != rebuilt_value:
+            errors.append(
+                f"{sample_id}: deterministic rendering metadata mismatch for {key}"
+            )
     return errors
 
 
@@ -370,7 +438,12 @@ def validate_sample_arrays(sample_id: str, arrays: dict[str, np.ndarray], metada
             errors.append(f"{sample_id}: no endpoint map pixels")
         if int(np.sum(arrays["edge_truncated_start"]) + np.sum(arrays["edge_truncated_end"])) == 0:
             errors.append(f"{sample_id}: no truncated endpoint metadata")
-    if not missing and schema_version in {DATASET_SCHEMA_VERSION_3D, DATASET_SCHEMA_VERSION_3D_LEGACY}:
+    if not missing and schema_version in {
+        DATASET_SCHEMA_VERSION_3D,
+        DATASET_SCHEMA_VERSION_3D_HARDENED,
+        DATASET_SCHEMA_VERSION_3D_NORMALIZED,
+        DATASET_SCHEMA_VERSION_3D_LEGACY,
+    }:
         errors.extend(validate_3d_arrays(sample_id, arrays, metadata))
     return errors
 
@@ -378,8 +451,15 @@ def validate_sample_arrays(sample_id: str, arrays: dict[str, np.ndarray], metada
 def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     schema_version = metadata.get("dataset_schema_version")
-    is_normalized_schema = schema_version in {DATASET_SCHEMA_VERSION_3D, DATASET_SCHEMA_VERSION_3D_NORMALIZED}
-    is_hardened_schema = schema_version == DATASET_SCHEMA_VERSION_3D
+    is_normalized_schema = schema_version in {
+        DATASET_SCHEMA_VERSION_3D,
+        DATASET_SCHEMA_VERSION_3D_HARDENED,
+        DATASET_SCHEMA_VERSION_3D_NORMALIZED,
+    }
+    is_hardened_schema = schema_version in {
+        DATASET_SCHEMA_VERSION_3D,
+        DATASET_SCHEMA_VERSION_3D_HARDENED,
+    }
     if arrays["fiber_points_xyz"].shape[1] != 3:
         errors.append(f"{sample_id}: fiber_points_xyz must have xyz columns")
     if arrays["fiber_points_xy"].shape[0] != arrays["fiber_points_xyz"].shape[0]:
@@ -418,6 +498,22 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
             errors.append(f"{sample_id}: trace_points_xy must match projected fiber_points_xy")
         if not np.array_equal(arrays["trace_point_offsets"], arrays["fiber_point_offsets"]):
             errors.append(f"{sample_id}: trace offsets must match fiber point offsets")
+        if arrays["trace_point_offsets"].ndim != 1:
+            errors.append(f"{sample_id}: trace_point_offsets must be one-dimensional")
+        elif (
+            arrays["trace_point_offsets"].size == 0
+            or int(arrays["trace_point_offsets"][0]) != 0
+            or np.any(np.diff(arrays["trace_point_offsets"]) < 0)
+            or int(arrays["trace_point_offsets"][-1])
+            != int(arrays["trace_points_xy"].shape[0])
+        ):
+            errors.append(f"{sample_id}: malformed trace_point_offsets")
+        if arrays["trace_ids"].shape[0] != arrays["trace_point_offsets"].shape[0] - 1:
+            errors.append(f"{sample_id}: trace_ids count does not match trace offsets")
+        if arrays["trace_status"].shape != arrays["trace_ids"].shape:
+            errors.append(f"{sample_id}: trace_status shape mismatch")
+        if arrays["trace_source"].shape != arrays["trace_ids"].shape:
+            errors.append(f"{sample_id}: trace_source shape mismatch")
         if arrays["sample_arc_length_weight"].shape[0] != arrays["fiber_points_xyz"].shape[0]:
             errors.append(f"{sample_id}: sample_arc_length_weight count mismatch")
         if arrays["fluorophore_density_per_length"].shape[0] != arrays["fiber_points_xyz"].shape[0]:
@@ -498,4 +594,60 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
                 errors.append(f"{sample_id}: retained kernel sum cannot exceed one")
             if metadata["rendering_report"].get("scenario_category") not in {"structural_qa", "optical_qa", "realism_calibration"}:
                 errors.append(f"{sample_id}: invalid scenario_category")
+            expected_optional = {
+                "orientation": {
+                    "orientation_cos2theta",
+                    "orientation_sin2theta",
+                    "orientation_valid_mask",
+                    "orientation_instance_count",
+                },
+                "background_distance_to_semantic_foreground": {
+                    "background_distance_to_semantic_foreground"
+                },
+            }
+            for target, names in expected_optional.items():
+                present = names <= set(arrays)
+                if bool(available.get(target)) != present:
+                    errors.append(
+                        f"{sample_id}: target_available[{target}] contradicts stored arrays"
+                    )
+        if schema_version == DATASET_SCHEMA_VERSION_3D_NORMALIZED:
+            for old_name in [
+                "source_float",
+                "distance_transform",
+                "orientation_cos2",
+                "orientation_sin2",
+                "visible_membership_y",
+                "visible_membership_x",
+                "visible_membership_instance_id",
+            ]:
+                if old_name not in arrays:
+                    errors.append(
+                        f"{sample_id}: schema 0.3 requires legacy field {old_name}; "
+                        "use an explicit migration rather than reinterpretation"
+                    )
+        if schema_version == DATASET_SCHEMA_VERSION_3D:
+            report = metadata["rendering_report"]
+            if report.get("distance_transform_backend") not in {
+                "scipy_ndimage_distance_transform_edt",
+                "disabled",
+            }:
+                errors.append(f"{sample_id}: invalid distance_transform_backend")
+            if report.get("psf_component_weight_convention") != "weights_sum_to_one":
+                errors.append(f"{sample_id}: missing PSF component-weight convention")
+            weight_sum = report.get("psf_component_weight_sum")
+            if not isinstance(weight_sum, (int, float)) or not np.isclose(
+                float(weight_sum), 1.0, rtol=0.0, atol=1e-9
+            ):
+                errors.append(f"{sample_id}: invalid PSF component weight sum")
+            crossing_count = arrays["projected_crossing_points_xy"].shape[0]
+            if arrays["projected_crossing_fiber_ids"].shape != (crossing_count, 2):
+                errors.append(f"{sample_id}: projected crossing fiber-ID shape mismatch")
+            if arrays["projected_crossing_segment_indices"].shape != (
+                crossing_count,
+                2,
+            ):
+                errors.append(
+                    f"{sample_id}: projected crossing segment-index shape mismatch"
+                )
     return errors

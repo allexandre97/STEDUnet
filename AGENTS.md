@@ -49,6 +49,8 @@ For tasks unrelated to literature evidence, do not load or restate the full lite
 - For synthetic STED work, treat `data_manifests/*.csv` as authoritative for source identity, culture/condition/isoform/DIV metadata, split eligibility, expert-validated blank provenance, and blank-pool roles. `PN###` is `culture_id`, `3R`/`4R` are `tau_isoform`, and primary development splits use manifest `experimental_group_id` rather than reparsing filenames. Downstream code must read these manifests, and normal tests must not require local `/ssd` paths.
 - Preserve the normalized 3D rendering contract unless a concrete defect is found: fluorophore values are empirical line density per pixel-equivalent contour length, PSF kernels are discrete unit-integral over truncated support, structural targets are independent of optical scaling, and synthetic samples must record annotation-compatible target availability and projected trace arrays.
 - For 3D synthetic artifacts, keep QA fixtures separate from realism-calibration samples. Real-versus-synthetic appearance reports must use only `scenario_category: realism_calibration` unless an override is explicit and documented.
+- Treat `docs/real_annotation_contract.md` as the reserved vocabulary for future real semantic classes and trace terminations. Current synthetic semantic masks remain binary; do not imply that bundles or clumps are simulated.
+- Schema 0.4+ distance targets require SciPy's exact Euclidean transform. Do not silently substitute an approximate backend.
 
 ## Commands
 

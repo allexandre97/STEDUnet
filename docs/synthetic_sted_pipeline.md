@@ -105,15 +105,21 @@ python scripts/visualize_synthetic_samples.py \
 
 The 3D path uses pixel-equivalent coordinates `(x, y, z)`, a focal plane in the same units, persistent-chain curves, arc-length resampling, correlated fluorophore line-density amplitudes, and direct depth-dependent 2D Gaussian splatting. It is an empirical effective optical model, not a calibrated physical STED PSF.
 
-The normalized 3D sample schema is an additive extension (`synthetic_sted_3d_rasterizer_0.4.0`). It records unit-integral PSF normalization, arc-length weighting, projected 2D traces, target availability, ignore masks, orientation-validity fields, source-raster semantics, visible-membership classes, and optical signal decomposition. Existing `synthetic_sted_mvp_0.1.0` 2D samples and earlier 3D review artifacts are not reinterpreted.
+The current normalized 3D sample schema is `synthetic_sted_3d_rasterizer_0.5.0`. It preserves the 0.4 conventions and adds crossing fiber and segment identities. Existing 0.2, 0.3, and 0.4 artifacts are validated under their original field names and are not silently reinterpreted.
 
 PSF boundary convention: each full finite-support discrete kernel is normalized before image clipping. Signal outside the field of view is lost and is not renormalized into edge pixels.
 
-Distance target convention: `background_distance_to_semantic_foreground` is zero inside `semantic_mask` and Euclidean pixel distance outside to the nearest semantic foreground pixel. It is not a centerline distance or signed distance.
+Distance target convention: `background_distance_to_semantic_foreground` is zero inside `semantic_mask` and exact Euclidean pixel distance outside to the nearest semantic foreground pixel. Schema 0.4+ generation requires SciPy's `distance_transform_edt`; it never silently falls back to an approximate chamfer transform.
 
 Source raster convention: `line_source_float` is the canonical pre-optical line-source raster whose integral matches emitted empirical line signal. `geometric_support_preview` is only a finite-radius visualization/support preview and has no source-energy interpretation.
 
-Orientation convention: doubled-angle orientation arrays are valid only where `orientation_valid_mask == 1`. Crossing, degenerate, or incompatible multi-instance pixels are invalid and stored with neutral zero orientation values.
+Orientation convention: doubled-angle orientation arrays are valid only where `orientation_valid_mask == 1`. Tangent consensus is required within each fiber and across fibers, so self-crossings, tight loops, degenerate tangents, and incompatible multi-instance crossings are invalid. Parallel and anti-parallel traces remain compatible.
+
+The authoritative visibility threshold is `optical_model.visible_signal_threshold`. The deprecated `targets.visible_signal_threshold` alias is accepted only when it is equal; conflicting values fail validation.
+
+PSF component weights use `weights_sum_to_one`. Core-plus-halo weights must be finite, nonnegative, have positive total, and sum to one without implicit normalization.
+
+The future real-annotation vocabulary is defined in `docs/real_annotation_contract.md`. The current synthetic semantic target remains binary and does not simulate bundles or clumps.
 
 Generate the normalized 3D review set with:
 

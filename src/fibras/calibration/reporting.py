@@ -16,7 +16,17 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, out_path: Path, config: dict[str, Any] | None = None, pure_blank_dir: Path | None = None) -> None:
+def build_report(
+    artifact_dir: Path,
+    synthetic_dir: Path,
+    composite_dir: Path,
+    out_path: Path,
+    config: dict[str, Any] | None = None,
+    pure_blank_dir: Path | None = None,
+    structural_qa_dir: Path | None = None,
+    optical_qa_dir: Path | None = None,
+    review_package_dir: Path | None = None,
+) -> None:
     assets = out_path.parent / (out_path.stem + "_assets")
     assets.mkdir(parents=True, exist_ok=True)
     for stale in assets.glob("*.png"):
@@ -37,7 +47,12 @@ def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, o
         "",
         "## Artifact metadata",
         "",
-        f"- Code version: `{summary['metadata']['code_version']}`",
+        f"- Source commit: `{summary['metadata'].get('source_commit_sha', summary['metadata'].get('code_version', 'not_available'))}`",
+        f"- Working tree dirty: `{summary['metadata'].get('working_tree_dirty', 'not_recorded')}`",
+        f"- Generation config SHA-256: `{summary['metadata'].get('generation_config_sha256', 'not_recorded')}`",
+        f"- Inventory manifest SHA-256: `{summary['metadata'].get('inventory_manifest_sha256', 'not_recorded')}`",
+        f"- Split manifest SHA-256: `{summary['metadata'].get('split_manifest_sha256', 'not_recorded')}`",
+        f"- Blank-pool manifest SHA-256: `{summary['metadata'].get('blank_pool_manifest_sha256', 'not_recorded')}`",
         f"- Date generated: `{summary['metadata']['date_generated']}`",
         f"- Fiber images characterized: {len(real_rows)}",
         f"- Blank images characterized: {len(blank_rows)}",
@@ -59,25 +74,25 @@ def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, o
     )
     histogram_path = assets / "intensity_percentile_summary.png"
     draw_histogram_comparison(real_rows, blank_rows, histogram_path)
-    lines.append(f"- Sorted per-image median intensity summary: `{histogram_path.name}`")
     power_path = assets / "normalized_spectral_shape_comparison.png"
     draw_bar_comparison(summary, power_path)
-    lines.append(f"- DC-removed normalized spectral-shape and autocorrelation comparison: `{power_path.name}`")
     proxy_path = assets / "proxy_comparison.png"
     draw_proxy_plot(proxy_rows, proxy_path)
-    lines.append(f"- Proxy distribution comparison: `{proxy_path.name}`")
     if config and "source_roots" in config:
         real_contact = assets / "representative_real_fiber_images.png"
         blank_contact = assets / "representative_blank_images.png"
-        real_ids = draw_source_contact_sheet(real_rows, config["source_roots"], real_contact, "real fiber")
-        blank_ids = draw_source_contact_sheet(blank_rows, config["source_roots"], blank_contact, "expert blank")
-        lines.append(f"- Deterministic real-fiber representatives: `{real_contact.name}`; source IDs: {', '.join(real_ids)}")
-        lines.append(f"- Deterministic blank representatives: `{blank_contact.name}`; source IDs: {', '.join(blank_ids)}")
+        draw_source_contact_sheet(
+            real_rows, config["source_roots"], real_contact, "real fiber"
+        )
+        draw_source_contact_sheet(
+            blank_rows, config["source_roots"], blank_contact, "expert blank"
+        )
     profile_path = assets / "transverse_profile_proxy.png"
-    if draw_transverse_profile(composite_dir, profile_path):
-        lines.append(f"- Composite transverse profile proxy: `{profile_path.name}`")
-    else:
-        lines.append("- Composite transverse profile proxy: not available; composite dataset manifest missing.")
+    draw_transverse_profile(composite_dir, profile_path)
+    lines.append(
+        "- Full local analysis assets are reproducible but intentionally ignored by Git; "
+        "the committed curated plots are linked below."
+    )
     lines.extend(["", "## Example sets", ""])
     lines.append(f"- Artificial-background synthetic examples: `{synthetic_dir}`")
     lines.append(f"- Real-blank composite examples: `{composite_dir}`")
@@ -95,6 +110,21 @@ def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, o
     if matched_path.exists():
         lines.extend(["", "## Matched source-blank deltas", ""])
         lines.extend(matched_delta_lines(read_csv(matched_path)))
+    package_dir = review_package_dir or out_path.parent / "review_package"
+    package = build_review_package(
+        package_dir,
+        summary,
+        synthetic_dir,
+        composite_dir,
+        structural_qa_dir,
+        optical_qa_dir,
+        read_csv(matched_path) if matched_path.exists() else [],
+    )
+    if package:
+        lines.extend(["", "## Curated review package", ""])
+        for label, path in package:
+            relative = path.relative_to(out_path.parent)
+            lines.append(f"- [{label}]({relative.as_posix()})")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -301,3 +331,180 @@ def matched_delta_lines(rows: list[dict[str, str]]) -> list[str]:
     lines.append("")
     lines.append("Matched deltas compare each normalized composite directly with its own source blank; positive values indicate the composite exceeded the blank.")
     return lines
+
+
+def build_review_package(
+    out_dir: Path,
+    summary: dict[str, Any],
+    synthetic_dir: Path,
+    composite_dir: Path,
+    structural_qa_dir: Path | None,
+    optical_qa_dir: Path | None,
+    matched_rows: list[dict[str, str]],
+) -> list[tuple[str, Path]]:
+    datasets = [
+        ("Realism samples", synthetic_dir, "realism_samples_contact_sheet.png"),
+        (
+            "Real-blank composites",
+            composite_dir,
+            "real_blank_composites_contact_sheet.png",
+        ),
+        (
+            "Structural QA",
+            structural_qa_dir,
+            "structural_qa_contact_sheet.png",
+        ),
+        ("Optical QA", optical_qa_dir, "optical_qa_contact_sheet.png"),
+    ]
+    if not any(
+        dataset_dir and (dataset_dir / "dataset_manifest.csv").exists()
+        for _, dataset_dir, _ in datasets
+    ):
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outputs: list[tuple[str, Path]] = []
+    selected_ids: dict[str, list[str]] = {}
+    for label, dataset_dir, filename in datasets:
+        if dataset_dir and (dataset_dir / "dataset_manifest.csv").exists():
+            path = out_dir / filename
+            selected_ids[label] = draw_generated_contact_sheet(
+                dataset_dir, path, label
+            )
+            outputs.append((label, path))
+    intensity = out_dir / "real_vs_synthetic_intensity_summary.png"
+    draw_intensity_group_summary(summary, intensity)
+    outputs.append(("Real-versus-synthetic intensity summary", intensity))
+    spectra = out_dir / "normalized_spectral_summary.png"
+    draw_bar_comparison(summary, spectra)
+    outputs.append(("Normalized spectral summary", spectra))
+    matched = out_dir / "matched_blank_delta_summary.png"
+    draw_matched_delta_summary(matched_rows, matched)
+    outputs.append(("Matched blank-delta summary", matched))
+    metadata = summary.get("metadata", {})
+    readme = [
+        "# Curated STED calibration review package",
+        "",
+        f"- Source commit: `{metadata.get('source_commit_sha', metadata.get('code_version', 'not_available'))}`",
+        f"- Working tree dirty: `{metadata.get('working_tree_dirty', 'not_recorded')}`",
+        f"- Schema: `synthetic_sted_3d_rasterizer_0.5.0`",
+        f"- Generation config SHA-256: `{metadata.get('generation_config_sha256', 'not_recorded')}`",
+        "- Selection: deterministic low/median/high p99 cases per generated dataset.",
+        "- Contents are lightweight PNG derivatives; no raw STED TIFF or NPZ data are included.",
+        "",
+        "## Selected samples",
+        "",
+    ]
+    for label, ids in selected_ids.items():
+        readme.append(f"- {label}: {', '.join(f'`{item}`' for item in ids)}")
+    readme_path = out_dir / "README.md"
+    readme_path.write_text("\n".join(readme) + "\n", encoding="utf-8")
+    outputs.append(("Review-package metadata", readme_path))
+    return outputs
+
+
+def draw_generated_contact_sheet(
+    dataset_dir: Path, path: Path, title: str
+) -> list[str]:
+    rows = read_csv(dataset_dir / "dataset_manifest.csv")
+    previews: list[tuple[dict[str, str], np.ndarray, float, str]] = []
+    for row in rows:
+        metadata = json.loads(
+            (dataset_dir / row["json_path"]).read_text(encoding="utf-8")
+        )
+        with np.load(dataset_dir / row["npz_path"], allow_pickle=False) as data:
+            image = data["render_uint8"].copy()
+        previews.append(
+            (
+                row,
+                image,
+                float(np.percentile(image, 99)),
+                str(metadata.get("dataset_schema_version", row.get("schema_version"))),
+            )
+        )
+    if not previews:
+        return []
+    ordered = sorted(previews, key=lambda item: (item[2], item[0]["sample_id"]))
+    selected = [ordered[0], ordered[len(ordered) // 2], ordered[-1]]
+    unique: list[tuple[dict[str, str], np.ndarray, float, str]] = []
+    seen: set[str] = set()
+    for item in selected:
+        if item[0]["sample_id"] not in seen:
+            unique.append(item)
+            seen.add(item[0]["sample_id"])
+    tile = 256
+    image = Image.new("RGB", (tile * len(unique), tile + 62), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((8, 4), title, fill="black")
+    for index, (row, array, p99, schema) in enumerate(unique):
+        image.paste(normalize_preview(array.astype(np.float32), tile), (index * tile, 22))
+        draw.text(
+            (index * tile + 4, tile + 25),
+            f"{row['sample_id']}\np99={p99:.3g} | {schema.rsplit('_', 1)[-1]}",
+            fill="black",
+        )
+    image.save(path)
+    return [item[0]["sample_id"] for item in unique]
+
+
+def draw_intensity_group_summary(summary: dict[str, Any], path: Path) -> None:
+    groups = [
+        "real_fiber",
+        "blank",
+        "artificial_synthetic",
+        "real_blank_composite",
+    ]
+    keys = ["p50", "p95", "p99"]
+    image = Image.new("RGB", (760, 420), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((20, 12), "Per-group median intensity percentiles", fill="black")
+    colors = [(0, 90, 220), (220, 90, 0), (60, 160, 60), (160, 60, 160)]
+    for key_index, key in enumerate(keys):
+        values = [
+            float(summary.get("groups", {}).get(group, {}).get(key, {}).get("median", 0))
+            for group in groups
+        ]
+        scale = max(values) or 1.0
+        x0 = 40 + key_index * 235
+        draw.text((x0, 45), key, fill="black")
+        for group_index, value in enumerate(values):
+            height = int(250 * value / scale)
+            x = x0 + group_index * 45
+            draw.rectangle((x, 330 - height, x + 28, 330), fill=colors[group_index])
+    for index, group in enumerate(groups):
+        draw.text((20 + index * 180, 375), group, fill=colors[index])
+    image.save(path)
+
+
+def draw_matched_delta_summary(
+    rows: list[dict[str, str]], path: Path
+) -> None:
+    keys = [
+        "delta_mean",
+        "delta_variance",
+        "delta_local_variance_p50",
+        "delta_zero_fraction",
+    ]
+    medians = [
+        float(np.median([float(row[key]) for row in rows if row.get(key)]))
+        if any(row.get(key) for row in rows)
+        else 0.0
+        for key in keys
+    ]
+    image = Image.new("RGB", (760, 380), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((20, 12), "Median composite minus matched source blank", fill="black")
+    max_abs = max([abs(value) for value in medians] + [1.0])
+    baseline = 210
+    for index, (key, value) in enumerate(zip(keys, medians)):
+        x = 55 + index * 175
+        height = int(130 * abs(value) / max_abs)
+        top, bottom = (
+            (baseline - height, baseline)
+            if value >= 0
+            else (baseline, baseline + height)
+        )
+        draw.rectangle((x, top, x + 70, bottom), fill=(60, 130, 190))
+        draw.text((x, 310), key.replace("delta_", ""), fill="black")
+        draw.text((x, 285), f"{value:.4g}", fill="black")
+    draw.line((30, baseline, 730, baseline), fill="black")
+    image.save(path)

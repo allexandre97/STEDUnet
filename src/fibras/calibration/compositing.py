@@ -15,7 +15,15 @@ from fibras.synthetic.geometry import generate_geometry, geometry_to_arrays
 from fibras.synthetic.geometry3d import generate_persistent_chain_geometry, geometry3d_to_arrays
 from fibras.synthetic.rasterizer3d import rasterize_3d_sample
 from fibras.synthetic.rendering import gaussian_blur, map_to_uint8
-from fibras.synthetic.schema import DATASET_SCHEMA_VERSION, DATASET_SCHEMA_VERSION_3D, GENERATOR_VERSION, GENERATOR_VERSION_3D, NODE_TYPES
+from fibras.synthetic.schema import (
+    DATASET_SCHEMA_VERSION,
+    DATASET_SCHEMA_VERSION_3D,
+    GENERATOR_VERSION,
+    GENERATOR_VERSION_3D,
+    NODE_TYPES,
+    REAL_SEMANTIC_CLASSES,
+    TRACE_TERMINATION_STATUSES,
+)
 from fibras.synthetic.storage import assert_no_object_arrays, sha256_file, write_dataset_manifest
 from fibras.synthetic.targets import rasterize_targets
 
@@ -335,6 +343,9 @@ def composite_metadata(
                     "trace_arrays": ["trace_points_xy", "trace_point_offsets", "trace_ids", "trace_status", "trace_source"],
                     "coordinate_convention": "zero-based x_y pixel-equivalent coordinates matching planned JFilament conversion",
                     "synthetic_only_targets_optional_for_real_samples": ["fiber_points_xyz", "nearest_depth_map", "weighted_mean_depth_map", "in_focus_signal", "out_of_focus_signal"],
+                    "reserved_real_semantic_classes": REAL_SEMANTIC_CLASSES,
+                    "reserved_trace_termination_statuses": sorted(TRACE_TERMINATION_STATUSES),
+                    "current_binary_semantic_mask": True,
                 },
                 "foreground_signal_convention": "arc-length weighted empirical line density convolved with unit-integral discrete PSF before real-blank addition",
             }

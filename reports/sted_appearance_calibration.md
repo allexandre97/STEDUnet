@@ -9,7 +9,12 @@
 
 ## Artifact metadata
 
-- Code version: `1aec4ed+dirty`
+- Source commit: `9a5aa79b3f680814ad279ec17a3d4543d1624d9f`
+- Working tree dirty: `True`
+- Generation config SHA-256: `7002bebd6ad5525101cffc5c88edfce0d3d106a087a73b8d0473fddf6cae6a47`
+- Inventory manifest SHA-256: `afd9a3a5dddd80b55803d5d19bc4bd388d733a9cfa121e5f51b8c6094133088a`
+- Split manifest SHA-256: `9489719f104bbf190c59919440db7327f9729b7f074efad3d8360355c015c1cd`
+- Blank-pool manifest SHA-256: `0cbe198c5c1d7da52bbd70963d4db13a48e40240778fc946085c45d940e3953a`
 - Date generated: `2026-06-19`
 - Fiber images characterized: 48
 - Blank images characterized: 48
@@ -34,12 +39,7 @@ Foreground occupancy, ridge response, orientation, apparent width, component len
 
 ## Representative plots
 
-- Sorted per-image median intensity summary: `intensity_percentile_summary.png`
-- DC-removed normalized spectral-shape and autocorrelation comparison: `normalized_spectral_shape_comparison.png`
-- Proxy distribution comparison: `proxy_comparison.png`
-- Deterministic real-fiber representatives: `representative_real_fiber_images.png`; source IDs: img_00273a310a71b5db79f4, img_b39e45524852b6ff530d, img_ffe8f9679077448a6547
-- Deterministic blank representatives: `representative_blank_images.png`; source IDs: img_014d9d77d1d61fed189b, img_6fcc906a6259240a019e, img_351f2b19d31066686b88
-- Composite transverse profile proxy: `transverse_profile_proxy.png`
+- Full local analysis assets are reproducible but intentionally ignored by Git; the committed curated plots are linked below.
 
 ## Example sets
 
@@ -85,3 +85,14 @@ Representative overlays for composites are generated separately by the visualiza
 | `foreground_added_integrated_signal` | 1.345e+05 |
 
 Matched deltas compare each normalized composite directly with its own source blank; positive values indicate the composite exceeded the blank.
+
+## Curated review package
+
+- [Realism samples](review_package/realism_samples_contact_sheet.png)
+- [Real-blank composites](review_package/real_blank_composites_contact_sheet.png)
+- [Structural QA](review_package/structural_qa_contact_sheet.png)
+- [Optical QA](review_package/optical_qa_contact_sheet.png)
+- [Real-versus-synthetic intensity summary](review_package/real_vs_synthetic_intensity_summary.png)
+- [Normalized spectral summary](review_package/normalized_spectral_summary.png)
+- [Matched blank-delta summary](review_package/matched_blank_delta_summary.png)
+- [Review-package metadata](review_package/README.md)

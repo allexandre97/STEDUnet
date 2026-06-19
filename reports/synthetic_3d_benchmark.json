@@ -4,31 +4,65 @@
       "brute_force_pairs": 170957,
       "candidate_pairs": 0,
       "case": "sparse_1024",
-      "crossing_detection_seconds": 0.038462584372609854,
-      "distance_transform_seconds": 8.220405079424381,
+      "crossing_detection_seconds": 0.037774122785776854,
+      "distance_transform_seconds": 0.026269773952662945,
       "kernel_count": 1446,
-      "peak_memory_mb": 265.653000831604,
-      "wall_time_seconds": 18.81207726104185
+      "peak_memory_mb": 185.01559448242188,
+      "wall_time_seconds": 0.5486579849384725
     },
     {
       "brute_force_pairs": 2759941,
       "candidate_pairs": 10908,
       "case": "dense_1024",
-      "crossing_detection_seconds": 0.606998841278255,
-      "distance_transform_seconds": 8.995653610676527,
+      "crossing_detection_seconds": 0.5982411620207131,
+      "distance_transform_seconds": 0.03971471777185798,
       "kernel_count": 4984,
-      "peak_memory_mb": 266.139443397522,
-      "wall_time_seconds": 20.99254064215347
+      "peak_memory_mb": 186.86017513275146,
+      "wall_time_seconds": 1.8146266168914735
     },
     {
       "brute_force_pairs": 514089,
       "candidate_pairs": 1089,
       "case": "structural_qa_1024",
-      "crossing_detection_seconds": 0.12874985998496413,
-      "distance_transform_seconds": 8.053703508339822,
+      "crossing_detection_seconds": 0.11587358685210347,
+      "distance_transform_seconds": 0.031756502110511065,
       "kernel_count": 2872,
-      "peak_memory_mb": 265.5059804916382,
-      "wall_time_seconds": 17.83076221588999
+      "peak_memory_mb": 186.40088558197021,
+      "wall_time_seconds": 0.8202630430459976
     }
-  ]
+  ],
+  "distance_transform_1024_seconds": 0.04126358684152365,
+  "distance_transform_backend": "scipy_ndimage_distance_transform_edt",
+  "environment": {
+    "numpy": "2.2.6",
+    "python": "3.10.20 | packaged by conda-forge | (main, Jun 11 2026, 03:31:56) [GCC 14.3.0]",
+    "scipy": "1.15.2"
+  },
+  "full_pipeline_width_fixture_seconds": 0.19362636376172304,
+  "optical_only_width_calibration_seconds": 0.058091535698622465,
+  "width_calibration": {
+    "integrated_transverse_signal": 75.25920104980469,
+    "line_density_amplitude": 99.82598114013672,
+    "max_allowed_fwhm_px": 5.5,
+    "measured_fwhm_px": 5.212856292724609,
+    "min_allowed_fwhm_px": 4.5,
+    "optical_only_elapsed_seconds": 0.05702499020844698,
+    "peak_transverse_signal": 13.160660743713379,
+    "sampling_interval_px": 1.0,
+    "target_fwhm_px": 5.0
+  },
+  "width_fwhm_by_orientation_degrees": {
+    "0": 5.212856292724609,
+    "15": 5.164185285568237,
+    "30": 5.240025043487549,
+    "45": 5.223849296569824,
+    "60": 5.24002480506897,
+    "75": 5.164185047149658,
+    "90": 5.212856292724609
+  },
+  "width_fwhm_by_subpixel_offset": {
+    "0.0,0.0": 5.212856292724609,
+    "0.25,0.25": 5.3071818351745605,
+    "0.5,0.1": 5.2396485805511475
+  }
 }

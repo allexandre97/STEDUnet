@@ -23,6 +23,7 @@ from .targets import draw_disk, segment_intersection
 REALISM_SCENARIOS = {"random_persistent_chain", "sparse_near_planar", "strongly_3d", "dense_local_geometry", "weak_intermittent"}
 STRUCTURAL_QA_SCENARIOS = {"projected_depth_crossing", "near_coplanar_crossing", "true_junction_fixture"}
 OPTICAL_QA_SCENARIOS = {"straight_width_calibration", "in_focus_defocused_crossing"}
+SCIPY_EDT_BACKEND = "scipy_ndimage_distance_transform_edt"
 
 
 def rasterize_3d_sample(
@@ -35,7 +36,8 @@ def rasterize_3d_sample(
     height, width = geometry["image_shape"]
     focal_z = float(geometry["focal_plane_z_px"])
     focal_depth = float(optical_config.get("focal_depth_range_px", 6.0))
-    visible_threshold = float(optical_config.get("visible_signal_threshold", 3.0))
+    visible_threshold, threshold_source = resolve_visible_signal_threshold(targets_config, optical_config)
+    psf_report = validate_psf_config(optical_config)
     foreground_scale = float(output_config.get("foreground_scale", optical_config.get("foreground_scale", 1.0)))
 
     target_arrays, target_report = geometry_targets_3d(geometry, targets_config, focal_depth)
@@ -56,6 +58,7 @@ def rasterize_3d_sample(
     arrays["render_uint8"] = uint8
     return arrays, {
         **signal_report,
+        **psf_report,
         **target_report,
         **optional_report,
         **mapping,
@@ -66,6 +69,7 @@ def rasterize_3d_sample(
         "scenario_category": scenario_category(geometry["parameters"].get("scenario", "random_persistent_chain"), targets_config),
         "image_shape": [height, width],
         "foreground_scale": foreground_scale,
+        "visible_signal_threshold_source": threshold_source,
         "render_float_min": float(render.min()),
         "render_float_max": float(render.max()),
         "clipping_count": int(mapping["clipped_low_count"]) + int(mapping["clipped_high_count"]),
@@ -92,6 +96,8 @@ def geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_
     orientation_cos_sum = np.zeros((height, width), dtype=np.float32)
     orientation_sin_sum = np.zeros((height, width), dtype=np.float32)
     orientation_instance_count = np.zeros((height, width), dtype=np.uint16)
+    orientation_valid_instance_count = np.zeros((height, width), dtype=np.uint16)
+    orientation_invalid_instance_count = np.zeros((height, width), dtype=np.uint16)
     membership_y: list[np.ndarray] = []
     membership_x: list[np.ndarray] = []
     membership_i: list[np.ndarray] = []
@@ -117,7 +123,16 @@ def geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_
             in_focus |= rasterize_variable_disks(points[focus_mask, :2], radii[focus_mask], (height, width)).astype(np.uint8)
         add_line_source(line_source, points[:, :2], density * ds)
         add_source_disks(support_preview, points[:, :2], radii, density * ds)
-        add_orientation_contribution(orientation_cos_sum, orientation_sin_sum, orientation_instance_count, points[:, :2], centerline_radius)
+        add_orientation_contribution(
+            orientation_cos_sum,
+            orientation_sin_sum,
+            orientation_instance_count,
+            orientation_valid_instance_count,
+            orientation_invalid_instance_count,
+            points[:, :2],
+            centerline_radius,
+            float(config.get("orientation_consensus_threshold", 0.95)),
+        )
         y, x = np.nonzero(support)
         membership_y.append(y.astype(np.int32))
         membership_x.append(x.astype(np.int32))
@@ -140,13 +155,20 @@ def geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_
     crossing_map = np.zeros((height, width), dtype=np.uint8)
     near_map = np.zeros((height, width), dtype=np.uint8)
     near_points = []
-    for xy, z_pair in crossings:
-        draw_disk(crossing_map, xy, crossing_radius)
-        if abs(float(z_pair[0]) - float(z_pair[1])) <= near_coplanar_depth_px:
-            draw_disk(near_map, xy, crossing_radius)
-            near_points.append(xy)
+    for crossing in crossings:
+        draw_disk(crossing_map, crossing["xy"], crossing_radius)
+        if abs(float(crossing["depths"][0]) - float(crossing["depths"][1])) <= near_coplanar_depth_px:
+            draw_disk(near_map, crossing["xy"], crossing_radius)
+            near_points.append(crossing["xy"])
 
-    orientation_arrays = finalize_orientation_field(orientation_cos_sum, orientation_sin_sum, orientation_instance_count, config)
+    orientation_arrays = finalize_orientation_field(
+        orientation_cos_sum,
+        orientation_sin_sum,
+        orientation_instance_count,
+        orientation_valid_instance_count,
+        orientation_invalid_instance_count,
+        config,
+    )
 
     return {
         "line_source_float": line_source,
@@ -163,9 +185,11 @@ def geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_
         "membership_y": np.concatenate(membership_y).astype(np.int32) if membership_y else np.zeros(0, dtype=np.int32),
         "membership_x": np.concatenate(membership_x).astype(np.int32) if membership_x else np.zeros(0, dtype=np.int32),
         "membership_instance_id": np.concatenate(membership_i).astype(np.int32) if membership_i else np.zeros(0, dtype=np.int32),
-        "geometric_crossing_points_xy": np.asarray([c[0] for c in crossings], dtype=np.float32).reshape((-1, 2)),
-        "projected_crossing_points_xy": np.asarray([c[0] for c in crossings], dtype=np.float32).reshape((-1, 2)),
-        "projected_crossing_depths": np.asarray([c[1] for c in crossings], dtype=np.float32).reshape((-1, 2)),
+        "geometric_crossing_points_xy": np.asarray([c["xy"] for c in crossings], dtype=np.float32).reshape((-1, 2)),
+        "projected_crossing_points_xy": np.asarray([c["xy"] for c in crossings], dtype=np.float32).reshape((-1, 2)),
+        "projected_crossing_depths": np.asarray([c["depths"] for c in crossings], dtype=np.float32).reshape((-1, 2)),
+        "projected_crossing_fiber_ids": np.asarray([c["fiber_ids"] for c in crossings], dtype=np.int32).reshape((-1, 2)),
+        "projected_crossing_segment_indices": np.asarray([c["segment_indices"] for c in crossings], dtype=np.int32).reshape((-1, 2)),
         "near_coplanar_crossing_points_xy": np.asarray(near_points, dtype=np.float32).reshape((-1, 2)),
         "sample_arc_length_weight": np.concatenate(arc_weights).astype(np.float32) if arc_weights else np.zeros(0, dtype=np.float32),
         "fluorophore_density_per_length": np.concatenate(densities).astype(np.float32) if densities else np.zeros(0, dtype=np.float32),
@@ -323,6 +347,7 @@ def splat_points(
     config: dict[str, Any],
     shape: tuple[int, int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    validate_psf_config(config)
     height, width = shape
     in_focus = np.zeros((height, width), dtype=np.float32)
     out_focus = np.zeros((height, width), dtype=np.float32)
@@ -344,6 +369,59 @@ def splat_points(
             comp_target = core if component["name"] == "core" else halo if component["name"] == "halo" else core
             _splat_component(target, comp_target, weighted_depth, weight_sum, nearest_abs, nearest_depth, point, float(density) * float(ds), dz, component, stats)
     return in_focus, out_focus, core, halo, weighted_depth, weight_sum, nearest_abs, nearest_depth, stats
+
+
+def validate_psf_config(config: dict[str, Any]) -> dict[str, Any]:
+    mode = str(config.get("psf_mode", "single_gaussian"))
+    if mode == "single_gaussian":
+        weights = [1.0]
+    elif mode in {"core_halo", "core_plus_halo"}:
+        weights = [
+            float(config.get("core_weight", 0.85)),
+            float(config.get("halo_weight", 0.15)),
+        ]
+    else:
+        raise ValueError(f"invalid psf_mode: {mode}")
+    if not all(math.isfinite(weight) for weight in weights):
+        raise ValueError("PSF component weights must be finite")
+    if any(weight < 0 for weight in weights):
+        raise ValueError("PSF component weights must be nonnegative")
+    total = float(sum(weights))
+    if total <= 0:
+        raise ValueError("at least one PSF component weight must be positive")
+    if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError(
+            f"PSF component weights must sum to one; received {total:.12g}"
+        )
+    return {
+        "psf_component_weight_convention": "weights_sum_to_one",
+        "psf_component_weight_sum": total,
+    }
+
+
+def resolve_visible_signal_threshold(
+    targets_config: dict[str, Any],
+    optical_config: dict[str, Any],
+) -> tuple[float, str]:
+    optical_value = optical_config.get("visible_signal_threshold")
+    legacy_value = targets_config.get("visible_signal_threshold")
+    if optical_value is None and legacy_value is None:
+        return 3.0, "optical_model_default"
+    if optical_value is None:
+        return float(legacy_value), "deprecated_targets_visible_signal_threshold"
+    if legacy_value is not None and not math.isclose(
+        float(optical_value), float(legacy_value), rel_tol=0.0, abs_tol=1e-12
+    ):
+        raise ValueError(
+            "targets.visible_signal_threshold is deprecated and conflicts with "
+            "optical_model.visible_signal_threshold"
+        )
+    source = (
+        "optical_model_visible_signal_threshold_with_equal_deprecated_alias"
+        if legacy_value is not None
+        else "optical_model_visible_signal_threshold"
+    )
+    return float(optical_value), source
 
 
 def psf_components(config: dict[str, Any], dz: float) -> list[dict[str, float | str]]:
@@ -538,7 +616,16 @@ def add_line_source(source: np.ndarray, points_xy: np.ndarray, signal: np.ndarra
             source[y, x] += float(value)
 
 
-def add_orientation_contribution(cos_sum: np.ndarray, sin_sum: np.ndarray, instance_count: np.ndarray, points_xy: np.ndarray, radius: float) -> None:
+def add_orientation_contribution(
+    cos_sum: np.ndarray,
+    sin_sum: np.ndarray,
+    instance_count: np.ndarray,
+    valid_instance_count: np.ndarray,
+    invalid_instance_count: np.ndarray,
+    points_xy: np.ndarray,
+    radius: float,
+    consensus_threshold: float,
+) -> None:
     if points_xy.shape[0] < 2:
         return
     fiber_cos = np.zeros_like(cos_sum, dtype=np.float32)
@@ -558,31 +645,48 @@ def add_orientation_contribution(cos_sum: np.ndarray, sin_sum: np.ndarray, insta
             fiber_cos[y_slice, x_slice][inside] += math.cos(2.0 * theta)
             fiber_sin[y_slice, x_slice][inside] += math.sin(2.0 * theta)
             fiber_count[y_slice, x_slice][inside] += 1
-    mask = fiber_count > 0
-    if not np.any(mask):
+    contributed = fiber_count > 0
+    if not np.any(contributed):
         return
-    mean_cos = np.zeros_like(fiber_cos)
-    mean_sin = np.zeros_like(fiber_sin)
-    mean_cos[mask] = fiber_cos[mask] / fiber_count[mask]
-    mean_sin[mask] = fiber_sin[mask] / fiber_count[mask]
-    mag = np.sqrt(mean_cos * mean_cos + mean_sin * mean_sin)
-    valid = mask & (mag > 1e-6)
-    mean_cos[valid] /= mag[valid]
-    mean_sin[valid] /= mag[valid]
-    cos_sum[valid] += mean_cos[valid]
-    sin_sum[valid] += mean_sin[valid]
-    instance_count[valid] += 1
+    resultant = np.zeros_like(fiber_cos)
+    resultant[contributed] = np.sqrt(
+        fiber_cos[contributed] ** 2 + fiber_sin[contributed] ** 2
+    ) / fiber_count[contributed]
+    valid = contributed & (resultant >= consensus_threshold)
+    invalid = contributed & ~valid
+    cos_sum[valid] += fiber_cos[valid] / np.maximum(
+        np.sqrt(fiber_cos[valid] ** 2 + fiber_sin[valid] ** 2), 1e-6
+    )
+    sin_sum[valid] += fiber_sin[valid] / np.maximum(
+        np.sqrt(fiber_cos[valid] ** 2 + fiber_sin[valid] ** 2), 1e-6
+    )
+    instance_count[contributed] += 1
+    valid_instance_count[valid] += 1
+    invalid_instance_count[invalid] += 1
 
 
-def finalize_orientation_field(cos_sum: np.ndarray, sin_sum: np.ndarray, instance_count: np.ndarray, config: dict[str, Any]) -> dict[str, np.ndarray]:
+def finalize_orientation_field(
+    cos_sum: np.ndarray,
+    sin_sum: np.ndarray,
+    instance_count: np.ndarray,
+    valid_instance_count: np.ndarray,
+    invalid_instance_count: np.ndarray,
+    config: dict[str, Any],
+) -> dict[str, np.ndarray]:
     consensus = float(config.get("orientation_consensus_threshold", 0.95))
     cos2 = np.zeros_like(cos_sum, dtype=np.float32)
     sin2 = np.zeros_like(sin_sum, dtype=np.float32)
     valid_mask = np.zeros_like(instance_count, dtype=np.uint8)
-    mask = instance_count > 0
-    mag = np.zeros_like(cos_sum, dtype=np.float32)
-    mag[mask] = np.sqrt(cos_sum[mask] ** 2 + sin_sum[mask] ** 2) / np.maximum(instance_count[mask], 1)
-    valid = mask & ((instance_count == 1) | (mag >= consensus))
+    candidates = (
+        (instance_count > 0)
+        & (invalid_instance_count == 0)
+        & (valid_instance_count == instance_count)
+    )
+    resultant = np.zeros_like(cos_sum, dtype=np.float32)
+    resultant[candidates] = np.sqrt(
+        cos_sum[candidates] ** 2 + sin_sum[candidates] ** 2
+    ) / np.maximum(valid_instance_count[candidates], 1)
+    valid = candidates & (resultant >= consensus)
     norm = np.sqrt(cos_sum[valid] ** 2 + sin_sum[valid] ** 2)
     cos2[valid] = cos_sum[valid] / np.maximum(norm, 1e-6)
     sin2[valid] = sin_sum[valid] / np.maximum(norm, 1e-6)
@@ -628,13 +732,14 @@ def projected_crossings(geometry: dict[str, Any], return_diagnostics: bool = Fal
     return crossings
 
 
-def projected_crossings_grid(geometry: dict[str, Any], cell_size: float = 32.0) -> tuple[list[tuple[np.ndarray, np.ndarray]], dict[str, int]]:
+def projected_crossings_grid(geometry: dict[str, Any], cell_size: float = 32.0) -> tuple[list[dict[str, np.ndarray]], dict[str, int]]:
     shared = {int(edge["fiber_id"]): set(map(int, edge["node_indices"])) for edge in geometry["edges"]}
     segments = []
     for fiber in geometry["fibers"]:
         fid = int(fiber["fiber_id"])
         for seg_index, (p0, p1) in enumerate(zip(fiber["points_xyz"][:-1], fiber["points_xyz"][1:])):
             segments.append((fid, seg_index, p0, p1))
+    segments.sort(key=lambda item: (item[0], item[1]))
     brute_force_pairs = 0
     for i, a in enumerate(segments):
         for b in segments[i + 1 :]:
@@ -656,42 +761,55 @@ def projected_crossings_grid(geometry: dict[str, Any], cell_size: float = 32.0) 
             for b in ordered[i + 1 :]:
                 if segments[a][0] != segments[b][0]:
                     candidate_pairs.add((a, b))
-    crossings: list[tuple[np.ndarray, np.ndarray]] = []
+    detections: list[dict[str, np.ndarray]] = []
     for ia, ib in sorted(candidate_pairs):
-        fa, _, a0, a1 = segments[ia]
-        fb, _, b0, b1 = segments[ib]
+        fa, sa, a0, a1 = segments[ia]
+        fb, sb, b0, b1 = segments[ib]
         if shared.get(fa, set()) & shared.get(fb, set()):
             continue
         hit = segment_intersection(a0[:2], a1[:2], b0[:2], b1[:2])
-        if hit is not None and not _near_crossing(crossings, hit):
+        if hit is not None:
             za = _interp_z_at_hit(a0, a1, hit)
             zb = _interp_z_at_hit(b0, b1, hit)
-            crossings.append((hit.astype(np.float32), np.asarray([za, zb], dtype=np.float32)))
+            detections.append(crossing_record(fa, fb, sa, sb, hit, za, zb))
+    crossings = deduplicate_crossings(detections)
     diagnostics = {
         "segment_count": len(segments),
         "brute_force_pair_count": brute_force_pairs,
         "candidate_pair_count": len(candidate_pairs),
         "candidate_pair_reduction": brute_force_pairs - len(candidate_pairs),
+        "raw_crossing_detection_count": len(detections),
+        "deduplicated_crossing_count": len(crossings),
     }
     return crossings, diagnostics
 
 
-def projected_crossings_bruteforce(geometry: dict[str, Any]) -> list[tuple[np.ndarray, np.ndarray]]:
+def projected_crossings_bruteforce(geometry: dict[str, Any]) -> list[dict[str, np.ndarray]]:
     shared = {int(edge["fiber_id"]): set(map(int, edge["node_indices"])) for edge in geometry["edges"]}
-    crossings: list[tuple[np.ndarray, np.ndarray]] = []
-    fibers = geometry["fibers"]
+    detections: list[dict[str, np.ndarray]] = []
+    fibers = sorted(geometry["fibers"], key=lambda fiber: int(fiber["fiber_id"]))
     for i, fa in enumerate(fibers):
         for fb in fibers[i + 1 :]:
             if shared.get(int(fa["fiber_id"]), set()) & shared.get(int(fb["fiber_id"]), set()):
                 continue
-            for a0, a1 in zip(fa["points_xyz"][:-1], fa["points_xyz"][1:]):
-                for b0, b1 in zip(fb["points_xyz"][:-1], fb["points_xyz"][1:]):
+            for sa, (a0, a1) in enumerate(zip(fa["points_xyz"][:-1], fa["points_xyz"][1:])):
+                for sb, (b0, b1) in enumerate(zip(fb["points_xyz"][:-1], fb["points_xyz"][1:])):
                     hit = segment_intersection(a0[:2], a1[:2], b0[:2], b1[:2])
-                    if hit is not None and not _near_crossing(crossings, hit):
+                    if hit is not None:
                         za = _interp_z_at_hit(a0, a1, hit)
                         zb = _interp_z_at_hit(b0, b1, hit)
-                        crossings.append((hit.astype(np.float32), np.asarray([za, zb], dtype=np.float32)))
-    return crossings
+                        detections.append(
+                            crossing_record(
+                                int(fa["fiber_id"]),
+                                int(fb["fiber_id"]),
+                                sa,
+                                sb,
+                                hit,
+                                za,
+                                zb,
+                            )
+                        )
+    return deduplicate_crossings(detections)
 
 
 def _interp_z_at_hit(p0: np.ndarray, p1: np.ndarray, hit_xy: np.ndarray) -> float:
@@ -701,8 +819,55 @@ def _interp_z_at_hit(p0: np.ndarray, p1: np.ndarray, hit_xy: np.ndarray) -> floa
     return float(p0[2] + t * (p1[2] - p0[2]))
 
 
-def _near_crossing(crossings: list[tuple[np.ndarray, np.ndarray]], xy: np.ndarray, tol: float = 2.0) -> bool:
-    return any(float(np.sum((xy - c[0]) ** 2)) <= tol * tol for c in crossings)
+def crossing_record(
+    fiber_a: int,
+    fiber_b: int,
+    segment_a: int,
+    segment_b: int,
+    xy: np.ndarray,
+    depth_a: float,
+    depth_b: float,
+) -> dict[str, np.ndarray]:
+    if fiber_a <= fiber_b:
+        fiber_ids = [fiber_a, fiber_b]
+        segment_indices = [segment_a, segment_b]
+        depths = [depth_a, depth_b]
+    else:
+        fiber_ids = [fiber_b, fiber_a]
+        segment_indices = [segment_b, segment_a]
+        depths = [depth_b, depth_a]
+    return {
+        "xy": np.asarray(xy, dtype=np.float32),
+        "depths": np.asarray(depths, dtype=np.float32),
+        "fiber_ids": np.asarray(fiber_ids, dtype=np.int32),
+        "segment_indices": np.asarray(segment_indices, dtype=np.int32),
+    }
+
+
+def deduplicate_crossings(
+    detections: list[dict[str, np.ndarray]],
+    tolerance_px: float = 2.0,
+) -> list[dict[str, np.ndarray]]:
+    ordered = sorted(
+        detections,
+        key=lambda record: (
+            tuple(map(int, record["fiber_ids"])),
+            float(record["xy"][0]),
+            float(record["xy"][1]),
+            tuple(map(int, record["segment_indices"])),
+        ),
+    )
+    crossings: list[dict[str, np.ndarray]] = []
+    for record in ordered:
+        same_crossing = any(
+            np.array_equal(record["fiber_ids"], current["fiber_ids"])
+            and float(np.sum((record["xy"] - current["xy"]) ** 2))
+            <= tolerance_px * tolerance_px
+            for current in crossings
+        )
+        if not same_crossing:
+            crossings.append(record)
+    return crossings
 
 
 def select_semantic_mask(arrays: dict[str, np.ndarray], config: dict[str, Any]) -> np.ndarray:
@@ -761,8 +926,10 @@ def apply_optional_targets(arrays: dict[str, np.ndarray], config: dict[str, Any]
         start = time.perf_counter()
         arrays["background_distance_to_semantic_foreground"] = background_distance_to_foreground(arrays["semantic_mask"])
         distance_seconds = time.perf_counter() - start
+        distance_backend = SCIPY_EDT_BACKEND
     else:
         distance_seconds = 0.0
+        distance_backend = "disabled"
     if not target_available["orientation"]:
         for name in ["orientation_cos2theta", "orientation_sin2theta", "orientation_valid_mask", "orientation_instance_count"]:
             arrays.pop(name, None)
@@ -773,26 +940,35 @@ def apply_optional_targets(arrays: dict[str, np.ndarray], config: dict[str, Any]
             "source_mask": "semantic_mask",
             "zero_convention": "zero inside semantic foreground; Euclidean pixel distance outside to nearest semantic foreground pixel",
             "units": "pixels",
+            "backend": distance_backend,
         },
+        "distance_transform_backend": distance_backend,
         "distance_transform_elapsed_seconds": distance_seconds,
         "orientation_target_semantics": {
             "encoding": "cos(2 theta), sin(2 theta)",
-            "valid_mask": "orientation_valid_mask marks single-instance or consensus-compatible orientation pixels",
+            "valid_mask": "orientation_valid_mask requires doubled-angle tangent consensus within each fiber and across fibers",
             "invalid_value": "orientation components are zero where invalid or disabled",
             "consensus_threshold": float(config.get("orientation_consensus_threshold", 0.95)),
+            "parallel_antiparallel_compatible": True,
         },
     }
 
 
 def background_distance_to_foreground(mask: np.ndarray) -> np.ndarray:
+    """Exact Euclidean pixel distance outside foreground; zero inside."""
+
+    if scipy_ndimage is None:
+        raise RuntimeError(
+            "SciPy is required when the schema 0.4+ distance target is enabled. "
+            "Install the declared environment.yml dependency or disable "
+            "targets.distance_transform_enabled."
+        )
     foreground = mask.astype(bool)
-    if scipy_ndimage is not None:
-        return scipy_ndimage.distance_transform_edt(~foreground).astype(np.float32)
-    return chamfer_distance(foreground).astype(np.float32)
+    return scipy_ndimage.distance_transform_edt(~foreground).astype(np.float32)
 
 
-def chamfer_distance(foreground: np.ndarray) -> np.ndarray:
-    """Fallback approximate background distance if scipy is unavailable."""
+def legacy_chamfer_distance(foreground: np.ndarray) -> np.ndarray:
+    """Approximate legacy test utility; not an exact Euclidean transform."""
 
     inf = 1_000_000.0
     dist = np.where(foreground, 0.0, inf).astype(np.float32)
@@ -828,9 +1004,8 @@ def measure_isolated_fiber_fwhm(config: dict[str, Any], angle_degrees: float | N
     key = json.dumps(
         {
             "geometry": config.get("geometry", {}),
-            "targets": config.get("targets", {}),
             "optical_model": config.get("optical_model", {}),
-            "output_mapping": config.get("output_mapping", {}),
+            "foreground_scale": config.get("output_mapping", {}).get("foreground_scale", 1.0),
             "width_calibration": config.get("width_calibration", {}),
             "angle_degrees": angle_degrees,
             "subpixel_shift": list(subpixel_shift),
@@ -846,9 +1021,8 @@ def _measure_isolated_fiber_fwhm_cached(config_key: str) -> tuple[tuple[str, flo
     payload = json.loads(config_key)
     config = {
         "geometry": payload["geometry"],
-        "targets": payload["targets"],
         "optical_model": payload["optical_model"],
-        "output_mapping": payload["output_mapping"],
+        "output_mapping": {"foreground_scale": payload["foreground_scale"]},
         "width_calibration": payload["width_calibration"],
     }
     result = _measure_isolated_fiber_fwhm_uncached(config, payload["angle_degrees"], tuple(payload["subpixel_shift"]))
@@ -856,6 +1030,7 @@ def _measure_isolated_fiber_fwhm_cached(config_key: str) -> tuple[tuple[str, flo
 
 
 def _measure_isolated_fiber_fwhm_uncached(config: dict[str, Any], angle_degrees: float | None = None, subpixel_shift: tuple[float, float] = (0.0, 0.0)) -> dict[str, float]:
+    start = time.perf_counter()
     geometry_config = dict(config.get("geometry", {}))
     width_cfg = config.get("width_calibration", {})
     geometry_config["scenario"] = "straight_width_calibration"
@@ -871,10 +1046,21 @@ def _measure_isolated_fiber_fwhm_uncached(config: dict[str, Any], angle_degrees:
             fiber["raw_vertices_xyz"] += shift
         for node in geometry["nodes"]:
             node["xyz"] += shift
-    arrays, _ = rasterize_3d_sample(geometry, config.get("targets", {}), config.get("optical_model", {}), config.get("output_mapping", {}), 0)
+    fiber = geometry["fibers"][0]
+    ds = sample_arc_length_weights(fiber["points_xyz"])
+    in_focus, out_focus, *_ = splat_points(
+        fiber["points_xyz"],
+        fiber["sample_amplitude"],
+        ds,
+        float(geometry["focal_plane_z_px"]),
+        config.get("optical_model", {}),
+        tuple(geometry["image_shape"]),
+    )
+    foreground_scale = float(config.get("output_mapping", {}).get("foreground_scale", 1.0))
+    signal = (in_focus + out_focus) * foreground_scale
     angle = math.radians(float(geometry_config.get("width_calibration", width_cfg).get("angle_degrees", 0.0) if angle_degrees is None else angle_degrees))
-    center = geometry["fibers"][0]["points_xyz"][len(geometry["fibers"][0]["points_xyz"]) // 2, :2]
-    profile_x, profile = sample_transverse_profile(arrays["total_clean_signal"], center, angle)
+    center = fiber["points_xyz"][len(fiber["points_xyz"]) // 2, :2]
+    profile_x, profile = sample_transverse_profile(signal, center, angle)
     return {
         "measured_fwhm_px": fwhm(profile_x, profile),
         "target_fwhm_px": float(width_cfg.get("target_fwhm_px", 5.0)),
@@ -884,7 +1070,16 @@ def _measure_isolated_fiber_fwhm_uncached(config: dict[str, Any], angle_degrees:
         "peak_transverse_signal": float(np.max(profile)),
         "line_density_amplitude": float(np.mean(geometry["fibers"][0]["sample_amplitude"])),
         "sampling_interval_px": float(geometry_config.get("arc_length_sampling_interval_px", 1.0)),
+        "optical_only_elapsed_seconds": time.perf_counter() - start,
     }
+
+
+def clear_width_calibration_cache() -> None:
+    _measure_isolated_fiber_fwhm_cached.cache_clear()
+
+
+def width_calibration_cache_info() -> Any:
+    return _measure_isolated_fiber_fwhm_cached.cache_info()
 
 
 def sample_transverse_profile(image: np.ndarray, center_xy: np.ndarray, tangent_angle: float, half_width: int = 24) -> tuple[np.ndarray, np.ndarray]:

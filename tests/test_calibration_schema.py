@@ -16,4 +16,8 @@ def test_calibration_metadata_records_exploratory_status(tmp_path):
     )
     assert metadata["calibration_status"] in CALIBRATION_DATA_STATUSES
     assert metadata["result_status"] == "exploratory"
-
+    assert len(metadata["source_commit_sha"]) == 40
+    assert isinstance(metadata["working_tree_dirty"], bool)
+    assert len(metadata["generation_config_sha256"]) == 64
+    assert len(metadata["inventory_manifest_sha256"]) == 64
+    assert len(metadata["split_manifest_sha256"]) == 64

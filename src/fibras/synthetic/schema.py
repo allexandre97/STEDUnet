@@ -12,8 +12,9 @@ DATASET_SCHEMA_VERSION = "synthetic_sted_mvp_0.1.0"
 GENERATOR_VERSION = "fibras_synthetic_mvp_0.1.0"
 DATASET_SCHEMA_VERSION_3D_LEGACY = "synthetic_sted_3d_rasterizer_0.2.0"
 DATASET_SCHEMA_VERSION_3D_NORMALIZED = "synthetic_sted_3d_rasterizer_0.3.0"
-DATASET_SCHEMA_VERSION_3D = "synthetic_sted_3d_rasterizer_0.4.0"
-GENERATOR_VERSION_3D = "fibras_persistent_chain_3d_0.4.0"
+DATASET_SCHEMA_VERSION_3D_HARDENED = "synthetic_sted_3d_rasterizer_0.4.0"
+DATASET_SCHEMA_VERSION_3D = "synthetic_sted_3d_rasterizer_0.5.0"
+GENERATOR_VERSION_3D = "fibras_persistent_chain_3d_0.5.0"
 
 GENERATOR_MODES = {
     "structural_test_2d",
@@ -32,6 +33,22 @@ CALIBRATION_STATUSES = {
     "empirically_matched",
     "approximately_physical",
     "physically_calibrated",
+}
+
+REAL_SEMANTIC_CLASSES = {
+    0: "background",
+    1: "individual_filament",
+    2: "bundle",
+    3: "clump",
+    255: "uncertain_ignore",
+}
+
+TRACE_TERMINATION_STATUSES = {
+    "valid_endpoint",
+    "boundary_truncation",
+    "terminates_in_bundle",
+    "terminates_in_clump",
+    "ambiguous_termination",
 }
 
 REQUIRED_ARRAYS = {
@@ -104,7 +121,7 @@ REQUIRED_ARRAYS_3D_NORMALIZED = REQUIRED_ARRAYS_3D_LEGACY | {
     "orientation_cos2",
     "orientation_sin2",
 }
-REQUIRED_ARRAYS_3D = (REQUIRED_ARRAYS_3D_LEGACY - {"source_float"}) | {
+REQUIRED_ARRAYS_3D_HARDENED = (REQUIRED_ARRAYS_3D_LEGACY - {"source_float"}) | {
     "sample_arc_length_weight",
     "fluorophore_density_per_length",
     "total_optical_signal",
@@ -128,11 +145,16 @@ REQUIRED_ARRAYS_3D = (REQUIRED_ARRAYS_3D_LEGACY - {"source_float"}) | {
     "combined_only_visible_mask",
     "visible_unassigned_mask",
 }
+REQUIRED_ARRAYS_3D = REQUIRED_ARRAYS_3D_HARDENED | {
+    "projected_crossing_fiber_ids",
+    "projected_crossing_segment_indices",
+}
 
 REQUIRED_ARRAYS_BY_SCHEMA = {
     DATASET_SCHEMA_VERSION: REQUIRED_ARRAYS,
     DATASET_SCHEMA_VERSION_3D_LEGACY: REQUIRED_ARRAYS_3D_LEGACY,
     DATASET_SCHEMA_VERSION_3D_NORMALIZED: REQUIRED_ARRAYS_3D_NORMALIZED,
+    DATASET_SCHEMA_VERSION_3D_HARDENED: REQUIRED_ARRAYS_3D_HARDENED,
     DATASET_SCHEMA_VERSION_3D: REQUIRED_ARRAYS_3D,
 }
 

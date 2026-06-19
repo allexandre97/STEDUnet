@@ -76,9 +76,9 @@ targets:
   crossing_radius_px: 3.0
   near_coplanar_depth_px: 8.0
   semantic_mask_source: visible_signal_mask
-  visible_signal_threshold: 3.0
   ignore_mask_rule: none
   scenario_category: realism_calibration
+  orientation_consensus_threshold: 0.95
   orientation_field_enabled: true
   distance_transform_enabled: true
 

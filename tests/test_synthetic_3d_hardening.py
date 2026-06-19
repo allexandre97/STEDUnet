@@ -62,7 +62,12 @@ def test_optimized_crossings_match_bruteforce():
     fast = projected_crossings(geom)
     brute = projected_crossings_bruteforce(geom)
     assert len(fast) == len(brute)
-    assert np.allclose(np.asarray([c[0] for c in fast]), np.asarray([c[0] for c in brute]))
+    for actual, expected in zip(fast, brute):
+        assert np.allclose(actual["xy"], expected["xy"])
+        assert np.array_equal(actual["fiber_ids"], expected["fiber_ids"])
+        assert np.array_equal(
+            actual["segment_indices"], expected["segment_indices"]
+        )
 
 
 def test_distance_target_semantics_are_background_to_semantic_foreground():
