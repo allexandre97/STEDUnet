@@ -15,7 +15,7 @@ from fibras.sted_splits import create_splits, write_csv, write_split_report
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--inventory-dir", required=True, type=Path)
-    parser.add_argument("--strategy", default="pn_holdout")
+    parser.add_argument("--strategy", default="experimental_group_holdout")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()

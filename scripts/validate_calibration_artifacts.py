@@ -17,7 +17,9 @@ from fibras.calibration.schema import CALIBRATION_DATA_STATUSES
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact-dir", type=Path)
+    parser.add_argument("--synthetic-dir", type=Path)
     parser.add_argument("--composite-dir", type=Path)
+    parser.add_argument("--pure-blank-dir", type=Path)
     args = parser.parse_args()
     errors: list[str] = []
     if args.artifact_dir:
@@ -41,6 +43,10 @@ def main() -> int:
                 errors.append("calibration artifacts must remain exploratory in this phase")
     if args.composite_dir:
         errors.extend(validate_composites(args.composite_dir))
+    if args.pure_blank_dir:
+        errors.extend(validate_pure_blank_qa(args.pure_blank_dir))
+    if args.synthetic_dir or args.composite_dir or args.pure_blank_dir:
+        errors.extend(validate_global_ids(args.synthetic_dir, args.composite_dir, args.pure_blank_dir))
     if errors:
         print("Calibration artifact validation failed:", file=sys.stderr)
         for error in errors:
@@ -50,6 +56,61 @@ def main() -> int:
     return 0
 
 
+def validate_pure_blank_qa(dataset_dir: Path) -> list[str]:
+    errors: list[str] = []
+    manifest = dataset_dir / "dataset_manifest.csv"
+    if not manifest.exists():
+        return [f"{manifest}: missing"]
+    import csv
+    import numpy as np
+
+    with manifest.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    for row in rows:
+        with np.load(dataset_dir / row["npz_path"], allow_pickle=False) as data:
+            required = ["semantic_mask", "centerline_mask", "endpoint_map", "junction_map", "crossing_map", "render_uint8"]
+            for name in required:
+                if name not in data.files:
+                    errors.append(f"{row['sample_id']}: missing {name}")
+            for name in required[:-1]:
+                if name in data.files and int(np.sum(data[name])) != 0:
+                    errors.append(f"{row['sample_id']}: pure blank target {name} must be zero")
+    return errors
+
+
+def validate_global_ids(*dirs: Path | None) -> list[str]:
+    errors: list[str] = []
+    seen: dict[str, Path] = {}
+    synthetic_hashes: dict[str, str] = {}
+    composite_parents: list[tuple[str, str, str]] = []
+    import csv
+
+    for dataset_dir in [d for d in dirs if d]:
+        manifest = dataset_dir / "dataset_manifest.csv"
+        if not manifest.exists():
+            continue
+        with manifest.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        for row in rows:
+            sid = row["sample_id"]
+            if sid in seen:
+                errors.append(f"sample_id collision: {sid} appears in {seen[sid]} and {dataset_dir}")
+            seen[sid] = dataset_dir
+            json_path = dataset_dir / row["json_path"]
+            if json_path.exists():
+                meta = json.loads(json_path.read_text(encoding="utf-8"))
+                if meta.get("source_blank_provenance") == "not_applicable":
+                    synthetic_hashes[sid] = row.get("npz_sha256", "")
+                parent = meta.get("parent_synthetic_sample_id")
+                if parent and parent != "generated_in_memory":
+                    composite_parents.append((sid, parent, meta.get("source_synthetic_artifact_hash", "")))
+    for sid, parent, expected_hash in composite_parents:
+        if parent not in synthetic_hashes:
+            errors.append(f"{sid}: parent_synthetic_sample_id {parent} does not resolve to supplied synthetic manifest")
+        elif expected_hash and synthetic_hashes[parent] != expected_hash:
+            errors.append(f"{sid}: parent synthetic hash mismatch")
+    return errors
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
-

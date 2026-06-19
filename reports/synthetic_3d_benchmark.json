@@ -1,0 +1,34 @@
+{
+  "benchmarks": [
+    {
+      "brute_force_pairs": 170957,
+      "candidate_pairs": 0,
+      "case": "sparse_1024",
+      "crossing_detection_seconds": 0.038462584372609854,
+      "distance_transform_seconds": 8.220405079424381,
+      "kernel_count": 1446,
+      "peak_memory_mb": 265.653000831604,
+      "wall_time_seconds": 18.81207726104185
+    },
+    {
+      "brute_force_pairs": 2759941,
+      "candidate_pairs": 10908,
+      "case": "dense_1024",
+      "crossing_detection_seconds": 0.606998841278255,
+      "distance_transform_seconds": 8.995653610676527,
+      "kernel_count": 4984,
+      "peak_memory_mb": 266.139443397522,
+      "wall_time_seconds": 20.99254064215347
+    },
+    {
+      "brute_force_pairs": 514089,
+      "candidate_pairs": 1089,
+      "case": "structural_qa_1024",
+      "crossing_detection_seconds": 0.12874985998496413,
+      "distance_transform_seconds": 8.053703508339822,
+      "kernel_count": 2872,
+      "peak_memory_mb": 265.5059804916382,
+      "wall_time_seconds": 17.83076221588999
+    }
+  ]
+}

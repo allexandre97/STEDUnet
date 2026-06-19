@@ -1,3 +1,94 @@
+# ----------------------------------------------------------------------
+# Local environments and caches
+# ----------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+env/
+.DS_Store
+
+# ----------------------------------------------------------------------
+# Local configuration and source data
+# ----------------------------------------------------------------------
+configs/synthetic_sted/source_roots.yaml
+.env
+*.local.yaml
+
+# Raw microscopy data should remain outside Git
+data/raw/
+data/sted/
+*.tif
+*.tiff
+
+# ----------------------------------------------------------------------
+# Generated synthetic datasets and binary artifacts
+# ----------------------------------------------------------------------
+calibration_artifacts/
+
+examples/synthetic_sted_3d_normalized/
+examples/sted_blank_composites_3d_normalized/
+examples/pure_blank_qa/
+examples/rasterizer_structural_qa/
+examples/rasterizer_optical_qa/
+examples/synthetic_sted_3d_realism/
+examples/sted_blank_composites_3d_realism/
+examples/sted_blank_composites_3d_normalized/
+examples/synthetic_sted_3d_normalized/
+
+# Generic generated numerical and microscopy artifacts
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.zarr/
+*.ckpt
+*.pth
+*.pt
+
+# ----------------------------------------------------------------------
+# Large generated report assets
+# Markdown reports remain trackable
+# ----------------------------------------------------------------------
+reports/sted_appearance_calibration_assets/
+reports/synthetic_3d_normalized_visuals/
+reports/rasterizer_structural_qa_visuals/
+reports/rasterizer_optical_qa_visuals/
+reports/synthetic_3d_realism_visuals/
+reports/sted_blank_composite_visuals/
+reports/sted_blank_composite_3d_normalized_visuals/
+reports/sted_blank_composite_3d_realism_visuals/
+reports/synthetic_mvp_visuals/
+
+# ----------------------------------------------------------------------
+# Archives and temporary output
+# ----------------------------------------------------------------------
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+tmp/
+temp/
+
+# Large generated examples retained locally, not in Git
+examples/sted_blank_composites_exploratory/
+examples/synthetic_sted_rendered/
+examples/synthetic_sted_3d_normalized/
+examples/sted_blank_composites_3d_normalized/
+examples/pure_blank_qa/
+examples/synthetic_sted_3d_realism/
+examples/sted_blank_composites_3d_realism/
+
+# Generated calibration data and large binary arrays
+calibration_artifacts/
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.zarr/

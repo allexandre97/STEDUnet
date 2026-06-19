@@ -48,13 +48,22 @@ IMAGE_FIELDS = [
     "saturation_value",
     "saturation_count",
     "zero_count",
-    "inferred_pn",
-    "inferred_round",
-    "inferred_condition",
-    "inferred_div",
+    "culture_id",
+    "disease",
+    "tau_isoform",
+    "experimental_condition",
+    "div",
+    "div_token",
     "series_index",
+    "filename_prefix",
     "acquisition_group",
-    "biological_group_candidate",
+    "experimental_group_id",
+    "parse_status",
+    "deprecated_inferred_pn",
+    "deprecated_inferred_round",
+    "deprecated_inferred_condition",
+    "deprecated_inferred_div",
+    "deprecated_biological_group_candidate",
     "file_duplicate_group",
     "pixel_duplicate_group",
     "thumbnail_duplicate_group",
@@ -265,13 +274,7 @@ def collect_records(root: SourceRoot) -> list[dict[str, str]]:
                 "saturation_value": str(sat_value),
                 "saturation_count": str(int(np.sum(arr == sat_value))),
                 "zero_count": str(int(np.sum(arr == 0))),
-                "inferred_pn": parsed.inferred_pn,
-                "inferred_round": parsed.inferred_round,
-                "inferred_condition": parsed.inferred_condition,
-                "inferred_div": parsed.inferred_div,
-                "series_index": parsed.series_index,
-                "acquisition_group": parsed.acquisition_group,
-                "biological_group_candidate": parsed.biological_group_candidate,
+                **parsed_manifest_fields(parsed),
                 "file_duplicate_group": "none",
                 "pixel_duplicate_group": "none",
                 "thumbnail_duplicate_group": "none",
@@ -303,13 +306,7 @@ def collect_records(root: SourceRoot) -> list[dict[str, str]]:
                 "saturation_value": "not_readable",
                 "saturation_count": "not_readable",
                 "zero_count": "not_readable",
-                "inferred_pn": parsed.inferred_pn,
-                "inferred_round": parsed.inferred_round,
-                "inferred_condition": parsed.inferred_condition,
-                "inferred_div": parsed.inferred_div,
-                "series_index": parsed.series_index,
-                "acquisition_group": parsed.acquisition_group,
-                "biological_group_candidate": parsed.biological_group_candidate,
+                **parsed_manifest_fields(parsed),
                 "file_duplicate_group": "none",
                 "pixel_duplicate_group": "none",
                 "thumbnail_duplicate_group": "none",
@@ -333,6 +330,27 @@ def collect_records(root: SourceRoot) -> list[dict[str, str]]:
         records.append(record)
     annotate_duplicates(records)
     return records
+
+
+def parsed_manifest_fields(parsed) -> dict[str, str]:
+    return {
+        "culture_id": parsed.culture_id,
+        "disease": parsed.disease,
+        "tau_isoform": parsed.tau_isoform,
+        "experimental_condition": parsed.experimental_condition,
+        "div": parsed.div,
+        "div_token": parsed.div_token,
+        "series_index": parsed.series_index,
+        "filename_prefix": parsed.prefix,
+        "acquisition_group": parsed.acquisition_group,
+        "experimental_group_id": parsed.experimental_group_id,
+        "parse_status": parsed.parse_status,
+        "deprecated_inferred_pn": parsed.culture_id,
+        "deprecated_inferred_round": parsed.tau_isoform,
+        "deprecated_inferred_condition": parsed.disease,
+        "deprecated_inferred_div": parsed.div_token,
+        "deprecated_biological_group_candidate": parsed.experimental_group_id,
+    }
 
 
 def format_float(value: float) -> str:
@@ -390,7 +408,7 @@ def write_csv(path: Path, records: Iterable[dict[str, str]], blank: bool = False
     fields = IMAGE_FIELDS + (BLANK_EXTRA_FIELDS if blank else [])
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
+        writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for record in records:
             writer.writerow(public_record(record, blank=blank))
@@ -399,34 +417,47 @@ def write_csv(path: Path, records: Iterable[dict[str, str]], blank: bool = False
 def write_acquisition_groups(path: Path, records: list[dict[str, str]]) -> None:
     fields = [
         "source_kind",
-        "biological_group_candidate",
+        "culture_id",
+        "disease",
+        "tau_isoform",
+        "experimental_condition",
+        "div",
+        "div_token",
+        "experimental_group_id",
         "acquisition_group",
         "image_count",
         "root_ids",
-        "conditions",
-        "divs",
-        "rounds",
+        "series_indices",
     ]
     groups: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
     for rec in records:
-        groups[(rec["source_kind"], rec["biological_group_candidate"], rec["acquisition_group"])].append(rec)
+        groups[(rec["source_kind"], rec["experimental_group_id"], rec["acquisition_group"])].append(rec)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
+        writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
-        for (kind, bio, acquisition), rows in sorted(groups.items()):
+        for (kind, group_id, acquisition), rows in sorted(groups.items()):
+            first = rows[0]
             writer.writerow(
                 {
                     "source_kind": kind,
-                    "biological_group_candidate": bio,
+                    "culture_id": first["culture_id"],
+                    "disease": first["disease"],
+                    "tau_isoform": first["tau_isoform"],
+                    "experimental_condition": first["experimental_condition"],
+                    "div": first["div"],
+                    "div_token": ";".join(sorted({r["div_token"] for r in rows})),
+                    "experimental_group_id": group_id,
                     "acquisition_group": acquisition,
                     "image_count": len(rows),
                     "root_ids": ";".join(sorted({r["source_root_id"] for r in rows})),
-                    "conditions": ";".join(sorted({r["inferred_condition"] for r in rows})),
-                    "divs": ";".join(sorted({r["inferred_div"] for r in rows})),
-                    "rounds": ";".join(sorted({r["inferred_round"] for r in rows})),
+                    "series_indices": ";".join(sorted({r["series_index"] for r in rows}, key=sort_key)),
                 }
             )
+
+
+def sort_key(value: str) -> tuple[int, str]:
+    return (0, f"{int(value):08d}") if value.isdigit() else (1, value)
 
 
 def summarize(records: list[dict[str, str]]) -> dict[str, object]:
@@ -490,6 +521,9 @@ def write_report(path: Path, fiber_records: list[dict[str, str]], blank_records:
         "- Thumbnail duplicates use deterministic p1/p99-normalized 32x32 thumbnail hashes.",
         "- Near-duplicate candidates use normalized thumbnail NCC with threshold 0.995, excluding exact thumbnail duplicates.",
         "- Elongated-component QC threshold is `max(p99.9, median + 8 * 1.4826 * MAD, 20)` with area >=12 px and elongation >=2.5.",
+        "- Filename metadata: `PN###` is recorded as `culture_id`; `3R`/`4R` are `tau_isoform`; `AD`, `PID`, `PSP`, and `CBD` are disease labels; `DIV` is parsed as an integer time point plus original token.",
+        "- `experimental_condition = disease + '_' + tau_isoform`; `experimental_group_id = culture_id + experimental_condition + canonical DIV`.",
+        "- Deprecated inferred columns are retained only for migration compatibility and are not used for new grouping logic.",
         "",
         "## Fiber images",
         "",
@@ -497,6 +531,11 @@ def write_report(path: Path, fiber_records: list[dict[str, str]], blank_records:
         f"- Readable: {sum(r['dtype'] != 'not_readable' for r in fiber_records)}",
         f"- Global percentiles: {json.dumps(fiber_global, sort_keys=True)}",
         f"- Validation flags: {json.dumps(flag_counts(fiber_records), sort_keys=True)}",
+        f"- Cultures: {json.dumps(count_values(fiber_records, 'culture_id'), sort_keys=True)}",
+        f"- Diseases: {json.dumps(count_values(fiber_records, 'disease'), sort_keys=True)}",
+        f"- Tau isoforms: {json.dumps(count_values(fiber_records, 'tau_isoform'), sort_keys=True)}",
+        f"- DIVs: {json.dumps(count_values(fiber_records, 'div'), sort_keys=True)}",
+        f"- Experimental conditions: {json.dumps(count_values(fiber_records, 'experimental_condition'), sort_keys=True)}",
         "",
         "## Expert-validated blanks",
         "",
@@ -506,9 +545,21 @@ def write_report(path: Path, fiber_records: list[dict[str, str]], blank_records:
         f"- Validation source: human_expert_review",
         f"- Global percentiles: {json.dumps(blank_global, sort_keys=True)}",
         f"- Validation flags: {json.dumps(flag_counts(blank_records), sort_keys=True)}",
+        f"- Cultures: {json.dumps(count_values(blank_records, 'culture_id'), sort_keys=True)}",
+        f"- Diseases: {json.dumps(count_values(blank_records, 'disease'), sort_keys=True)}",
+        f"- Tau isoforms: {json.dumps(count_values(blank_records, 'tau_isoform'), sort_keys=True)}",
+        f"- DIVs: {json.dumps(count_values(blank_records, 'div'), sort_keys=True)}",
+        f"- Experimental conditions: {json.dumps(count_values(blank_records, 'experimental_condition'), sort_keys=True)}",
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def count_values(records: list[dict[str, str]], field: str) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for rec in records:
+        counts[rec.get(field, "unknown")] += 1
+    return dict(sorted(counts.items()))
 
 
 def run_inventory(
@@ -528,4 +579,3 @@ def run_inventory(
     write_csv(out_dir / "sted_blanks.csv", blank_records, blank=True)
     write_acquisition_groups(out_dir / "acquisition_groups.csv", fiber_records + blank_records)
     write_report(report_path, fiber_records, blank_records, fiber_root, blank_root)
-

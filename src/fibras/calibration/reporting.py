@@ -16,9 +16,11 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, out_path: Path, config: dict[str, Any] | None = None) -> None:
+def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, out_path: Path, config: dict[str, Any] | None = None, pure_blank_dir: Path | None = None) -> None:
     assets = out_path.parent / (out_path.stem + "_assets")
     assets.mkdir(parents=True, exist_ok=True)
+    for stale in assets.glob("*.png"):
+        stale.unlink()
     summary = json.loads((artifact_dir / "appearance_summary.json").read_text(encoding="utf-8"))
     real_rows = read_csv(artifact_dir / "real_fiber_stats.csv")
     blank_rows = read_csv(artifact_dir / "blank_stats.csv")
@@ -55,12 +57,12 @@ def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, o
             "",
         ]
     )
-    histogram_path = assets / "intensity_histogram_comparison.png"
+    histogram_path = assets / "intensity_percentile_summary.png"
     draw_histogram_comparison(real_rows, blank_rows, histogram_path)
-    lines.append(f"- Intensity histogram comparison: `{histogram_path.name}`")
-    power_path = assets / "power_proxy_comparison.png"
+    lines.append(f"- Sorted per-image median intensity summary: `{histogram_path.name}`")
+    power_path = assets / "normalized_spectral_shape_comparison.png"
     draw_bar_comparison(summary, power_path)
-    lines.append(f"- Power/autocorrelation proxy comparison: `{power_path.name}`")
+    lines.append(f"- DC-removed normalized spectral-shape and autocorrelation comparison: `{power_path.name}`")
     proxy_path = assets / "proxy_comparison.png"
     draw_proxy_plot(proxy_rows, proxy_path)
     lines.append(f"- Proxy distribution comparison: `{proxy_path.name}`")
@@ -79,17 +81,48 @@ def build_report(artifact_dir: Path, synthetic_dir: Path, composite_dir: Path, o
     lines.extend(["", "## Example sets", ""])
     lines.append(f"- Artificial-background synthetic examples: `{synthetic_dir}`")
     lines.append(f"- Real-blank composite examples: `{composite_dir}`")
+    if pure_blank_dir:
+        lines.append(f"- Pure blank QA examples: `{pure_blank_dir}`")
+    width_lines = width_calibration_lines(synthetic_dir)
+    if width_lines:
+        lines.extend(["", "## Width and PSF checks", ""])
+        lines.extend(width_lines)
     lines.append("")
     lines.append("Representative overlays for composites are generated separately by the visualization script and remain labelled exploratory.")
     lines.extend(["", "## Mismatches and unresolved uncertainties", ""])
     lines.extend(mismatch_lines(summary))
+    matched_path = artifact_dir / "real_blank_composite_matched_blank_delta_stats.csv"
+    if matched_path.exists():
+        lines.extend(["", "## Matched source-blank deltas", ""])
+        lines.extend(matched_delta_lines(read_csv(matched_path)))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def width_calibration_lines(synthetic_dir: Path) -> list[str]:
+    manifest = synthetic_dir / "dataset_manifest.csv"
+    if not manifest.exists():
+        return []
+    rows = read_csv(manifest)
+    if not rows:
+        return []
+    meta_path = synthetic_dir / rows[0]["json_path"]
+    if not meta_path.exists():
+        return []
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    width = meta.get("width_calibration", {})
+    render = meta.get("rendering_report", {})
+    return [
+        f"- Apparent in-focus FWHM: `{width.get('measured_fwhm_px', 'n/a')}` px; target `{width.get('target_fwhm_px', 'n/a')}` px.",
+        f"- PSF mode: `{render.get('psf_mode', 'n/a')}`; normalization `{render.get('psf_normalization', 'n/a')}`.",
+        f"- Core integrated signal: `{render.get('core_integrated_signal', 'n/a')}`; halo integrated signal: `{render.get('halo_integrated_signal', 'n/a')}`.",
+        "- PSF remains an empirical effective model, not a physically calibrated STED PSF.",
+    ]
+
+
 def summary_table(summary: dict[str, Any]) -> list[str]:
     lines = ["| Quantity | Real fiber median | Blank median | Artificial synthetic median | Real-blank composite median |", "|:--|--:|--:|--:|--:|"]
-    for key in ["p50", "p99", "std", "zero_fraction", "saturation_fraction", "local_variance_p50", "row_variation", "column_variation"]:
+    for key in ["p50", "p99", "std", "zero_fraction", "saturation_fraction", "local_variance_p50", "row_variation", "column_variation", "normalized_radial_power_tail_median"]:
         lines.append(
             f"| `{key}` | {fmt(summary, 'real_fiber', key)} | {fmt(summary, 'blank', key)} | {fmt(summary, 'artificial_synthetic', key)} | {fmt(summary, 'real_blank_composite', key)} |"
         )
@@ -195,11 +228,11 @@ def draw_histogram_comparison(real_rows: list[dict[str, str]], blank_rows: list[
 
 
 def draw_bar_comparison(summary: dict[str, Any], path: Path) -> None:
-    keys = ["radial_power_tail_median", "autocorrelation_tail_median", "directional_power_ratio"]
+    keys = ["normalized_radial_power_tail_median", "normalized_radial_power_high_band_fraction", "autocorrelation_tail_median"]
     groups = ["real_fiber", "blank", "artificial_synthetic", "real_blank_composite"]
     img = Image.new("RGB", (820, 420), "white")
     draw = ImageDraw.Draw(img)
-    draw.text((20, 10), "Spectrum/autocorrelation proxy medians", fill="black")
+    draw.text((20, 10), "Normalized spectral-shape/autocorrelation proxy medians", fill="black")
     x = 40
     for key in keys:
         draw.text((x, 40), key, fill="black")
@@ -244,7 +277,7 @@ def mismatch_lines(summary: dict[str, Any]) -> list[str]:
     real = summary["groups"].get("real_fiber", {})
     comp = summary["groups"].get("real_blank_composite", {})
     synth = summary["groups"].get("artificial_synthetic", {})
-    for key in ["p99", "std", "local_variance_p50", "radial_power_tail_median", "zero_fraction"]:
+    for key in ["p99", "std", "local_variance_p50", "normalized_radial_power_tail_median", "zero_fraction"]:
         if key in real and key in comp:
             diff = comp[key]["median"] - real[key]["median"]
             lines.append(f"- `{key}`: real-blank composite median minus real-fiber median = `{diff:.4g}`.")
@@ -253,4 +286,18 @@ def mismatch_lines(summary: dict[str, Any]) -> list[str]:
             lines.append(f"- `{key}`: artificial synthetic median minus real-fiber median = `{diff:.4g}`.")
     lines.append("- Label-dependent structure quantities remain uncertain until formal annotation exists.")
     lines.append("- Current calibration is exploratory because biological grouping and approved calibration subsets are unresolved.")
+    return lines
+
+
+def matched_delta_lines(rows: list[dict[str, str]]) -> list[str]:
+    if not rows:
+        return ["- No matched blank-relative rows were available."]
+    keys = ["delta_p50", "delta_p95", "delta_p99", "delta_mean", "delta_variance", "delta_zero_fraction", "delta_local_variance_p50", "foreground_added_integrated_signal"]
+    lines = ["| Quantity | Median matched delta |", "|:--|--:|"]
+    for key in keys:
+        values = [float(row[key]) for row in rows if row.get(key)]
+        if values:
+            lines.append(f"| `{key}` | {float(np.median(values)):.4g} |")
+    lines.append("")
+    lines.append("Matched deltas compare each normalized composite directly with its own source blank; positive values indicate the composite exceeded the blank.")
     return lines

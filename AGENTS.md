@@ -46,7 +46,9 @@ For tasks unrelated to literature evidence, do not load or restate the full lite
 - Every nontrivial reported fact or paper-attributed claim must have page-linked evidence as required by the schema.
 - Every project recommendation or STED-transfer judgment must be labelled as agent inference and cite its evidential basis.
 - Do not add or replace a source paper without updating the manifest and reviewing the corpus scope.
-- For synthetic STED work, treat `data_manifests/*.csv` as authoritative for source identity, PN-level biological-sample partitioning, acquisition metadata, split eligibility, and expert-validated blank provenance. `PN###` is the indivisible primary partitioning unit; condition and DIV are stratification/reporting variables, not grouping boundaries. Downstream code must read these manifests rather than independently inferring grouping from filenames, and normal tests must not require local `/ssd` paths.
+- For synthetic STED work, treat `data_manifests/*.csv` as authoritative for source identity, culture/condition/isoform/DIV metadata, split eligibility, expert-validated blank provenance, and blank-pool roles. `PN###` is `culture_id`, `3R`/`4R` are `tau_isoform`, and primary development splits use manifest `experimental_group_id` rather than reparsing filenames. Downstream code must read these manifests, and normal tests must not require local `/ssd` paths.
+- Preserve the normalized 3D rendering contract unless a concrete defect is found: fluorophore values are empirical line density per pixel-equivalent contour length, PSF kernels are discrete unit-integral over truncated support, structural targets are independent of optical scaling, and synthetic samples must record annotation-compatible target availability and projected trace arrays.
+- For 3D synthetic artifacts, keep QA fixtures separate from realism-calibration samples. Real-versus-synthetic appearance reports must use only `scenario_category: realism_calibration` unless an override is explicit and documented.
 
 ## Commands
 

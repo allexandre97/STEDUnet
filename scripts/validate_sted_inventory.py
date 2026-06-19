@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fibras.sted_inventory import BLANK_EXTRA_FIELDS, IMAGE_FIELDS, sha256_file
+from fibras.sted_splits import ALLOWED_TAU_ISOFORMS, expected_experimental_condition, expected_experimental_group_id
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -41,6 +42,12 @@ def validate_manifest(path: Path, expected_fields: list[str]) -> list[str]:
             ]:
                 if row.get(field) != value:
                     errors.append(f"{row.get('stable_image_id')}: invalid blank provenance {field}={row.get(field)}")
+        if row.get("tau_isoform") not in ALLOWED_TAU_ISOFORMS:
+            errors.append(f"{row.get('stable_image_id')}: invalid tau_isoform={row.get('tau_isoform')}")
+        if row.get("experimental_condition") != expected_experimental_condition(row):
+            errors.append(f"{row.get('stable_image_id')}: inconsistent experimental_condition")
+        if row.get("experimental_group_id") != expected_experimental_group_id(row):
+            errors.append(f"{row.get('stable_image_id')}: inconsistent experimental_group_id")
     return errors
 
 
@@ -98,4 +105,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

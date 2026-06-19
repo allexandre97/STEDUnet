@@ -1,0 +1,156 @@
+dataset_name: synthetic_3d_realism
+generator_mode: persistent_chain_3d
+scenario_category: realism_calibration
+sample_count: 8
+split: training
+calibration_status: procedural_unmatched
+calibration_data_status: exploratory_unpartitioned
+
+source_roots:
+  sted_fiber_data: /ssd/STED_dataset/data
+  sted_blank_data: /ssd/STED_dataset/bigblank
+
+heavy_analysis_max_images_per_kind: 48
+statistics:
+  local_block_size_px: 32
+  low_frequency_sigma_px: 32.0
+  spectrum_size_px: 256
+  spectrum_bins: 32
+proxies:
+  threshold_mad_k: 6.0
+  sensitivity_threshold_mad_k: [4.0, 8.0]
+  ridge_percentile: 95
+  min_component_area_px: 8
+  crossing_component_area_px: 20
+background_decomposition:
+  method: gaussian_lowpass
+  sigma_px_values: [8.0, 32.0, 64.0]
+
+geometry:
+  image_shape: [1024, 1024]
+  volume_depth_px: 96.0
+  focal_plane_z_px: 48.0
+  base_seed: 61001
+  sample_scenarios:
+    - sparse_near_planar
+    - strongly_3d
+    - dense_local_geometry
+    - weak_intermittent
+    - sparse_near_planar
+    - strongly_3d
+    - dense_local_geometry
+    - weak_intermittent
+  fiber_count_range: [4, 8]
+  contour_length_range_px: [180.0, 520.0]
+  step_length_px: 6.0
+  persistence_length_range_px: [90.0, 260.0]
+  depth_distribution_sigma_px: 18.0
+  spline_samples_per_segment: 6
+  arc_length_sampling_interval_px: 1.0
+  boundary_mode: reflect
+  branching_enabled: false
+  bundling_enabled: false
+  width_calibration:
+    angle_degrees: 0.0
+    length_px: 720.0
+  fluorophore:
+    base_amplitude_range: [95.0, 145.0]
+    variation_scale_samples: 48.0
+    variation_amplitude: 0.25
+    gap_probability: 0.15
+    gap_length_range_px: [8.0, 28.0]
+    gap_residual_fraction: 0.05
+    max_gaps_per_fiber: 3
+    punctate_probability: 0.1
+    punctate_max_count: 3
+    punctate_sigma_samples: 3.0
+    punctate_gain: 1.2
+    radius_range_px: [0.6, 1.1]
+    radius_variation_scale_samples: 64.0
+    radius_variation_amplitude: 0.15
+
+targets:
+  centerline_radius_px: 0.75
+  endpoint_radius_px: 3.0
+  junction_radius_px: 3.0
+  crossing_radius_px: 3.0
+  near_coplanar_depth_px: 8.0
+  semantic_mask_source: visible_signal_mask
+  visible_signal_threshold: 3.0
+  ignore_mask_rule: none
+  scenario_category: realism_calibration
+  orientation_field_enabled: true
+  distance_transform_enabled: true
+
+optical_model:
+  psf_mode: core_plus_halo
+  psf_normalization: unit_integral
+  sigma_xy_0_px: 2.123
+  sigma_z_px: 24.0
+  defocus_broadening: 0.025
+  core_weight: 0.92
+  core_sigma_xy_0_px: 2.123
+  core_sigma_z_px: 24.0
+  core_defocus_broadening: 0.025
+  halo_weight: 0.08
+  halo_sigma_xy_0_px: 6.0
+  halo_sigma_z_px: 48.0
+  halo_defocus_broadening: 0.055
+  kernel_truncation_radius: 3.0
+  focal_depth_range_px: 6.0
+  visible_signal_threshold: 3.0
+
+output_mapping:
+  base_seed: 62001
+  foreground_scale: 1.0
+  background_level: 4.0
+  background_noise_std: 0.0
+  uint8_min: 0.0
+  uint8_max: 255.0
+  clipping_behavior: clip_to_uint8_range
+  saturation_warning_threshold: 0.001
+
+real_blank_rendering:
+  base_seed: 62001
+  signal_dependent_perturbation_scale: 0.0
+  uint8_min: 0.0
+  uint8_max: 255.0
+
+compositing:
+  base_seed: 63001
+  sample_count: 8
+  synthetic_split: synthetic_background_train
+  composite_dataset_name: blank_composite_3d_realism
+  blank_pool_role: synthetic_background_train
+  blank_pool_manifest: data_manifests/sted_blank_pools.csv
+  parent_synthetic_dir: examples/synthetic_sted_3d_realism
+  crop_mode: full_image
+  blank_scale: 1.0
+  foreground_scale: 1.0
+  allow_blank_reuse_across_splits: false
+
+width_calibration:
+  target_fwhm_px: 5.0
+  min_allowed_fwhm_px: 4.5
+  max_allowed_fwhm_px: 5.5
+  measurement_method: transverse_profile_fwhm
+  test_orientations_degrees: [0, 15, 30, 45, 60, 75, 90]
+  test_subpixel_offsets: [[0.0, 0.0], [0.25, 0.25], [0.5, 0.1]]
+
+calibration_parameter_classes:
+  fluorophore_density_per_unit_length:
+    classification: manually_selected
+    source: exploratory normalized rendering configuration
+    uncertainty: broad
+  core_plus_halo_psf:
+    classification: manually_selected
+    source: empirical effective PSF; not physically calibrated
+    uncertainty: broad
+  apparent_width_px:
+    classification: proxy_estimated
+    source: provisional visual estimate of real STED fibers
+    uncertainty: approximate
+  foreground_scale:
+    classification: manually_selected
+    source: exploratory compositor configuration
+    uncertainty: broad

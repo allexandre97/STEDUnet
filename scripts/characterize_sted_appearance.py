@@ -25,7 +25,7 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         raise ValueError(f"no rows for {path}")
     fields = list(rows[0].keys())
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
+        writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -60,8 +60,13 @@ def main() -> int:
                 "stable_image_id": row["stable_image_id"],
                 "source_kind": row["source_kind"],
                 "relative_path": row["relative_path"],
-                "inferred_condition": row.get("inferred_condition", "unknown"),
-                "inferred_div": row.get("inferred_div", "unknown"),
+                "culture_id": row.get("culture_id", "unknown"),
+                "disease": row.get("disease", "unknown"),
+                "tau_isoform": row.get("tau_isoform", "unknown"),
+                "experimental_condition": row.get("experimental_condition", "unknown"),
+                "div": row.get("div", "unknown"),
+                "div_token": row.get("div_token", "unknown"),
+                "experimental_group_id": row.get("experimental_group_id", "unknown"),
             }
         )
         proxy_rows.append(proxy)
@@ -75,7 +80,20 @@ def main() -> int:
             int(stats_config.get("spectrum_size_px", 256)),
             int(stats_config.get("spectrum_bins", 32)),
         ):
-            drow.update({"stable_image_id": row["stable_image_id"], "source_kind": row["source_kind"], "relative_path": row["relative_path"]})
+            drow.update(
+                {
+                    "stable_image_id": row["stable_image_id"],
+                    "source_kind": row["source_kind"],
+                    "relative_path": row["relative_path"],
+                    "culture_id": row.get("culture_id", "unknown"),
+                    "disease": row.get("disease", "unknown"),
+                    "tau_isoform": row.get("tau_isoform", "unknown"),
+                    "experimental_condition": row.get("experimental_condition", "unknown"),
+                    "div": row.get("div", "unknown"),
+                    "div_token": row.get("div_token", "unknown"),
+                    "experimental_group_id": row.get("experimental_group_id", "unknown"),
+                }
+            )
             decomp_rows.append(drow)
     write_csv(out / "real_fiber_stats.csv", fiber_stats)
     write_csv(out / "blank_stats.csv", blank_stats)
@@ -114,7 +132,7 @@ def main() -> int:
             "blank_ids": [r["stable_image_id"] for r in blank_subset],
         },
         "calibration_parameter_classes": config.get("calibration_parameter_classes", {}),
-        "biological_independence_warning": "PN/round/DIV hierarchy unresolved; no biological independence claim is made.",
+        "biological_independence_warning": "Current splits remain provisional; no biological independence or final held-out performance claim is made.",
     }
     write_json(out / "appearance_summary.json", summary)
     return 0
@@ -132,6 +150,9 @@ def comparison_fields() -> list[str]:
         "row_variation",
         "column_variation",
         "radial_power_tail_median",
+        "normalized_radial_power_tail_median",
+        "normalized_radial_power_low_band_fraction",
+        "normalized_radial_power_high_band_fraction",
         "autocorrelation_tail_median",
         "directional_power_ratio",
     ]
@@ -139,4 +160,3 @@ def comparison_fields() -> list[str]:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

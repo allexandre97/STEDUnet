@@ -26,6 +26,17 @@ def radial_power_spectrum(image: np.ndarray, size: int = 256, bins: int = 32) ->
     return radial_average(power, bins).astype(np.float32)
 
 
+def normalized_radial_power_spectrum(image: np.ndarray, size: int = 256, bins: int = 32) -> np.ndarray:
+    """Radial spectral shape with DC removed and non-DC power normalized."""
+
+    power = radial_power_spectrum(image, size, bins).astype(np.float64)
+    power[0] = 0.0
+    total = float(power.sum())
+    if total <= 0 or not np.isfinite(total):
+        return np.zeros_like(power, dtype=np.float32)
+    return (power / total).astype(np.float32)
+
+
 def autocorrelation_radial(image: np.ndarray, size: int = 256, bins: int = 32) -> np.ndarray:
     arr = resize_square(image, size)
     arr = arr - float(arr.mean())
@@ -57,4 +68,3 @@ def radial_average(values: np.ndarray, bins: int) -> np.ndarray:
         mask = (r >= edges[i]) & (r < edges[i + 1])
         out[i] = float(values[mask].mean()) if np.any(mask) else 0.0
     return out
-

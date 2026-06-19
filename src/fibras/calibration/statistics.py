@@ -11,7 +11,7 @@ import numpy as np
 from fibras.sted_inventory import read_image
 from fibras.synthetic.rendering import gaussian_blur
 
-from .spectra import autocorrelation_radial, directional_power_ratio, radial_power_spectrum
+from .spectra import autocorrelation_radial, directional_power_ratio, normalized_radial_power_spectrum, radial_power_spectrum
 
 
 PERCENTILES = [0, 0.1, 1, 5, 25, 50, 75, 95, 99, 99.9, 100]
@@ -43,10 +43,13 @@ def summarize_image(path: Path, row: dict[str, str], config: dict[str, Any]) -> 
             "stable_image_id": row["stable_image_id"],
             "source_kind": row["source_kind"],
             "relative_path": row["relative_path"],
-            "inferred_pn": row.get("inferred_pn", row.get("biological_group_candidate", "unknown")),
-            "inferred_round": row.get("inferred_round", "unknown"),
-            "inferred_condition": row.get("inferred_condition", "unknown"),
-            "inferred_div": row.get("inferred_div", "unknown"),
+            "culture_id": row.get("culture_id", row.get("deprecated_inferred_pn", "unknown")),
+            "disease": row.get("disease", row.get("deprecated_inferred_condition", "unknown")),
+            "tau_isoform": row.get("tau_isoform", row.get("deprecated_inferred_round", "unknown")),
+            "experimental_condition": row.get("experimental_condition", "unknown"),
+            "div": row.get("div", "unknown"),
+            "div_token": row.get("div_token", row.get("deprecated_inferred_div", "unknown")),
+            "experimental_group_id": row.get("experimental_group_id", row.get("deprecated_biological_group_candidate", "unknown")),
             "series_index": row.get("series_index", "unknown"),
         }
     )
@@ -63,15 +66,19 @@ def summarize_array(image: np.ndarray, row: dict[str, str], config: dict[str, An
     residual = arr - low
     std = float(arr.std()) or 1.0
     power = radial_power_spectrum(arr, int(config.get("spectrum_size_px", 256)), int(config.get("spectrum_bins", 32)))
+    norm_power = normalized_radial_power_spectrum(arr, int(config.get("spectrum_size_px", 256)), int(config.get("spectrum_bins", 32)))
     ac = autocorrelation_radial(arr, int(config.get("spectrum_size_px", 256)), int(config.get("spectrum_bins", 32)))
     record = {
         "stable_image_id": row.get("stable_image_id", row.get("sample_id", "not_available")),
         "source_kind": row.get("source_kind", "generated"),
         "relative_path": row.get("relative_path", "not_applicable"),
-        "inferred_pn": row.get("inferred_pn", "not_applicable"),
-        "inferred_round": row.get("inferred_round", "not_applicable"),
-        "inferred_condition": row.get("inferred_condition", "not_applicable"),
-        "inferred_div": row.get("inferred_div", "not_applicable"),
+        "culture_id": row.get("culture_id", "not_applicable"),
+        "disease": row.get("disease", "not_applicable"),
+        "tau_isoform": row.get("tau_isoform", "not_applicable"),
+        "experimental_condition": row.get("experimental_condition", "not_applicable"),
+        "div": row.get("div", "not_applicable"),
+        "div_token": row.get("div_token", "not_applicable"),
+        "experimental_group_id": row.get("experimental_group_id", "not_applicable"),
         "series_index": row.get("series_index", "not_applicable"),
         "mean": f"{float(vals.mean()):.6g}",
         "std": f"{float(vals.std()):.6g}",
@@ -91,6 +98,9 @@ def summarize_array(image: np.ndarray, row: dict[str, str], config: dict[str, An
         "directional_power_ratio": f"{directional_power_ratio(arr, int(config.get('spectrum_size_px', 256))):.6g}",
         "radial_power_first_bin": f"{float(power[0]):.6g}",
         "radial_power_tail_median": f"{float(np.median(power[len(power)//2:])):.6g}",
+        "normalized_radial_power_tail_median": f"{float(np.median(norm_power[len(norm_power)//2:])):.6g}",
+        "normalized_radial_power_low_band_fraction": f"{float(np.sum(norm_power[1:max(2, len(norm_power)//4)])):.6g}",
+        "normalized_radial_power_high_band_fraction": f"{float(np.sum(norm_power[len(norm_power)//2:])):.6g}",
         "autocorrelation_first_bin": f"{float(ac[0]):.6g}",
         "autocorrelation_tail_median": f"{float(np.median(ac[len(ac)//2:])):.6g}",
     }

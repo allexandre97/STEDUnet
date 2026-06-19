@@ -1,5 +1,7 @@
 # Synthetic STED Fiber Data Pipeline MVP Plan
 
+Note: this document records the original bounded MVP plan. Later approved phases added the 3D persistent-chain rasterizer, normalized arc-length foreground signal, unit-integral effective PSF kernels, exploratory real-blank compositing, blank-pool roles, and annotation-ready trace/target metadata. Use `docs/synthetic_sted_pipeline.md` and `docs/sted_appearance_calibration.md` for current operational commands.
+
 ## Status
 
 This document defines the approved implementation plan for a bounded synthetic-data MVP.
@@ -232,13 +234,18 @@ Each source-image record must include:
 - `saturation_value`
 - `saturation_count`
 - `zero_count`
-- `inferred_pn`
-- `inferred_round`
-- `inferred_condition`
-- `inferred_div`
+- `culture_id`
+- `disease`
+- `tau_isoform`
+- `experimental_condition`
+- `div`
+- `div_token`
 - `series_index`
+- `filename_prefix`
 - `acquisition_group`
-- `biological_group_candidate`
+- `experimental_group_id`
+- `parse_status`
+- deprecated migration fields such as `deprecated_inferred_round`, if needed
 - `file_duplicate_group`
 - `pixel_duplicate_group`
 - `thumbnail_duplicate_group`
@@ -333,22 +340,24 @@ Reserve held-out real data before generator calibration.
 - `validation`
 - `held_out_test`
 
-### 5.2 PN-level primary grouping
+### 5.2 Experimental-group primary grouping
 
-Use the confirmed biological-sample grouping:
+Use the clarified experimental hierarchy:
 
-- `PN###` identifies a biological sample and is the indivisible primary partitioning unit;
-- all images, acquisitions, and series belonging to the same PN remain in exactly one of `calibration`, `training`, `validation`, or `held_out_test`;
-- condition and DIV are stratification variables and must not define grouping boundaries;
-- round and series are retained as metadata and reporting variables;
-- the primary held-out test contains only PNs absent from calibration, training, and validation.
+- `PN###` is `culture_id`, a culture-record/batch identifier, not the disease condition and not an automatic partitioning unit;
+- `3R` and `4R` are `tau_isoform`, not acquisition rounds;
+- `AD`, `PID`, `PSP`, and `CBD` are disease conditions;
+- `DIV` is days in vitro and is retained as an integer time point plus original token;
+- `experimental_condition = disease + '_' + tau_isoform`;
+- `experimental_group_id = culture_id + disease + tau_isoform + div`;
+- all series belonging to the same `experimental_group_id` remain in exactly one primary role.
 
 Rules:
 
-- never split patches, acquisitions, or series from the same PN across incompatible primary roles;
-- use condition and DIV to report stratum coverage and warn when too few independent PNs exist;
-- store `human_approved=false` until the proposed PN allocation and stratum counts are reviewed;
-- keep any secondary image-level evaluation role separate from the primary PN-held-out metric.
+- never split fields of view or series from the same experimental group across incompatible primary roles;
+- use experimental condition and DIV to report stratum coverage and warn when too few experimental groups exist;
+- store `human_approved=false` until the proposed allocation and stratum counts are reviewed;
+- support a separate `culture_held_out` strategy for culture-batch sensitivity analysis, without mixing it with primary experimental-group-held-out metrics.
 
 The final held-out groups must not influence:
 
@@ -365,12 +374,15 @@ The final held-out groups must not influence:
 
 - `stable_image_id`
 - `source_kind`
-- `biological_group_candidate`
-- `acquisition_group`
-- `inferred_condition`
-- `inferred_div`
-- `inferred_round`
+- `culture_id`
+- `disease`
+- `tau_isoform`
+- `experimental_condition`
+- `div`
+- `div_token`
 - `series_index`
+- `experimental_group_id`
+- `acquisition_group`
 - `eligibility`
 - `primary_metric_role`
 - `secondary_image_eval_role`
@@ -391,9 +403,9 @@ Real blank compositing is deferred, but the split schema must be defined now.
 
 Rules:
 
-- assign each complete blank source image to exactly one primary split by PN by default;
-- keep all blank images belonging to the same PN in one split;
-- retain blank acquisition group, condition, DIV, round, and series as metadata;
+- assign each complete blank source image to exactly one primary split by experimental group by default;
+- keep all blank images belonging to the same experimental group in one split;
+- retain blank acquisition group, culture, disease, tau isoform, DIV, and series as metadata;
 - do not split crops from one blank image across train, validation, and test;
 - do not allow overlapping crops from one blank image to cross incompatible splits;
 - when PN grouping cannot be inferred, fail validation or require an explicit reviewed override;
@@ -968,7 +980,7 @@ Command:
 ```bash
 python scripts/create_sted_splits.py \
   --inventory-dir data_manifests \
-  --strategy pn_holdout \
+  --strategy experimental_group_holdout \
   --out data_manifests/sted_splits.csv \
   --report reports/sted_split_report.md
 ```
