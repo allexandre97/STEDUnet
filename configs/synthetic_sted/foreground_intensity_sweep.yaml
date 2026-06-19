@@ -1,0 +1,17 @@
+calibration_status: exploratory_unpartitioned
+sample_count: 8
+
+# Line-density and compositor scaling are exactly multiplicative while
+# signal-dependent perturbation is disabled. This bounded sweep therefore
+# holds line density fixed and varies only the compositor scale.
+fluorophore_density_multiplier: 1.0
+compositor_foreground_scales: [0.5, 1.0, 2.0, 4.0, 8.0, 12.0]
+current_default_scale: 1.0
+
+ranking:
+  clipping_fraction_limit: 0.0001
+  saturation_fraction_limit: 0.0001
+
+visualization:
+  representative_samples_per_setting: 3
+  per_image_percentiles: [0.5, 99.5]

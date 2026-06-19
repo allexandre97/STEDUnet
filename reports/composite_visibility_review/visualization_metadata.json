@@ -1,0 +1,23 @@
+{
+  "per_image_stretch_percentiles": [
+    0.5,
+    99.5
+  ],
+  "raw_display_range": [
+    0.0,
+    255.0
+  ],
+  "shared_review_percentiles": [
+    0.5,
+    99.5
+  ],
+  "shared_review_population": "all pixels from real_fiber_stats.csv source images",
+  "shared_review_range": [
+    0.0,
+    96.0
+  ],
+  "source_commit_sha": "11209678d9f37a873b14b4f584b0242268c2cb73",
+  "source_composite_manifest_sha256": "66f93134f51d985819bb10a00e40b364e17ee6e62e70d4cb7dff860173bb23dd",
+  "stored_arrays_modified": false,
+  "working_tree_dirty": true
+}

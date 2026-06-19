@@ -20,6 +20,7 @@ def main() -> int:
     parser.add_argument("--synthetic-dir", type=Path)
     parser.add_argument("--composite-dir", type=Path)
     parser.add_argument("--pure-blank-dir", type=Path)
+    parser.add_argument("--sweep-dir", type=Path)
     args = parser.parse_args()
     errors: list[str] = []
     if args.artifact_dir:
@@ -55,6 +56,8 @@ def main() -> int:
         errors.extend(validate_composites(args.composite_dir))
     if args.pure_blank_dir:
         errors.extend(validate_pure_blank_qa(args.pure_blank_dir))
+    if args.sweep_dir:
+        errors.extend(validate_foreground_sweep(args.sweep_dir))
     if args.synthetic_dir or args.composite_dir or args.pure_blank_dir:
         errors.extend(validate_global_ids(args.synthetic_dir, args.composite_dir, args.pure_blank_dir))
     if errors:
@@ -64,6 +67,49 @@ def main() -> int:
         return 1
     print("Calibration artifact validation passed.")
     return 0
+
+
+def validate_foreground_sweep(sweep_dir: Path) -> list[str]:
+    import csv
+
+    errors: list[str] = []
+    summary_path = sweep_dir / "foreground_intensity_sweep_summary.json"
+    per_sample_path = sweep_dir / "foreground_intensity_sweep_per_sample.csv"
+    table_path = sweep_dir / "foreground_intensity_sweep_summary.csv"
+    for path in [summary_path, per_sample_path, table_path]:
+        if not path.exists():
+            errors.append(f"missing foreground sweep artifact: {path.name}")
+    if errors:
+        return errors
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if summary["metadata"].get("calibration_status") != "exploratory_unpartitioned":
+        errors.append("foreground sweep must remain exploratory_unpartitioned")
+    with per_sample_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    by_setting: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        by_setting.setdefault(row["setting_id"], []).append(row)
+    reference: set[tuple[str, str, str, str, str, str]] | None = None
+    for setting, selected in by_setting.items():
+        identities = {
+            (
+                row["sample_id"],
+                row["parent_synthetic_sample_id"],
+                row["source_blank_id"],
+                row["geometry_seed"],
+                row["rendering_seed"],
+                row["compositing_seed"],
+            )
+            for row in selected
+        }
+        if reference is None:
+            reference = identities
+        elif identities != reference:
+            errors.append(
+                f"{setting}: geometry, blank, parent, or seed identities differ "
+                "from other sweep settings"
+            )
+    return errors
 
 
 def validate_pure_blank_qa(dataset_dir: Path) -> list[str]:

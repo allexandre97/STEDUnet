@@ -51,6 +51,7 @@ For tasks unrelated to literature evidence, do not load or restate the full lite
 - For 3D synthetic artifacts, keep QA fixtures separate from realism-calibration samples. Real-versus-synthetic appearance reports must use only `scenario_category: realism_calibration` unless an override is explicit and documented.
 - Treat `docs/real_annotation_contract.md` as the reserved vocabulary for future real semantic classes and trace terminations. Current synthetic semantic masks remain binary; do not imply that bundles or clumps are simulated.
 - Schema 0.4+ distance targets require SciPy's exact Euclidean transform. Do not silently substitute an approximate backend.
+- Composite visualization contrast is display-only: preserve stored arrays, use fixed `0–255` raw panels, and use one globally derived real-STED review range for cross-image comparison. Foreground-intensity sweeps remain exploratory and must not update the production configuration automatically.
 
 ## Commands
 

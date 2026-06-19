@@ -68,6 +68,22 @@ python scripts/build_sted_calibration_report.py \
   --composite-dir examples/sted_blank_composites_3d_realism \
   --pure-blank-dir examples/pure_blank_qa \
   --out reports/sted_appearance_calibration.md
+
+python scripts/build_composite_visibility_review.py \
+  --composite-dir examples/sted_blank_composites_3d_realism \
+  --artifact-dir calibration_artifacts/exploratory \
+  --real-fiber-root /ssd/STED_dataset/data \
+  --out reports/composite_visibility_review
+
+python scripts/run_foreground_intensity_sweep.py \
+  --base-config configs/synthetic_sted/mvp_3d_normalized_rasterizer.yaml \
+  --sweep-config configs/synthetic_sted/foreground_intensity_sweep.yaml \
+  --artifact-dir calibration_artifacts/exploratory \
+  --composite-dir examples/sted_blank_composites_3d_realism \
+  --inventory-dir data_manifests \
+  --splits data_manifests/sted_splits.csv \
+  --out calibration_artifacts/foreground_intensity_sweep \
+  --report-dir reports/foreground_intensity_sweep
 ```
 
 ## Measurement classes
@@ -81,6 +97,14 @@ Proxy-derived measurements include foreground occupancy, ridge response, orienta
 The compositor uses the observed blank image as the authoritative background. It renders the normalized 3D synthetic foreground separately, adds it to the observed blank, optionally adds a small empirical signal-dependent perturbation to the added signal only, and applies one final explicit float-to-uint8 mapping.
 
 It does not infer photon counts, detector gain, or Poisson calibration, and it does not alter structural targets during compositing.
+
+Composite review panels separate stored intensity from display contrast:
+
+- raw panels always use fixed limits `0–255`;
+- shared panels use one global real-fiber p0.5–p99.5 range for real, blank, artificial, and composite images;
+- independent per-image and foreground-only stretches are labelled display aids and are not quantitative transformations.
+
+The bounded foreground-intensity sweep holds geometry, PSF, blanks, seeds, and output mapping fixed. With signal-dependent perturbation disabled, fluorophore-density and compositor scales are mathematically redundant, so the exploratory sweep varies their effective product without changing the production configuration.
 
 ## Normalized foreground convention
 
