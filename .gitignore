@@ -67,6 +67,7 @@ reports/sted_blank_composite_3d_normalized_visuals/
 reports/sted_blank_composite_3d_realism_visuals/
 reports/synthetic_mvp_visuals/
 reports/synthetic_morphology_review/full_samples/
+reports/synthetic_morphology_semantic_review/full_samples/
 reports/review_package/*
 !reports/review_package/README.md
 !reports/review_package/*.png

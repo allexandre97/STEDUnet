@@ -17,6 +17,7 @@ from .geometry3d import (
     smooth_catmull_rom,
 )
 from .schema import (
+    BOUNDARY_CODES,
     FIBER_STRUCTURE_TYPE_CODES,
     NODE_TYPES,
     TRACE_TERMINATION_STATUS_CODES,
@@ -394,19 +395,38 @@ def append_fiber(
     smooth = smooth_catmull_rom(
         raw, int(geometry_config.get("spline_samples_per_segment", 6))
     )
-    smooth = np.clip(
-        smooth,
-        [0, 0, 0],
+    limits = np.asarray(
         [
             geometry_config["image_shape"][1] - 1,
             geometry_config["image_shape"][0] - 1,
             geometry_config.get("volume_depth_px", 96),
         ],
+        dtype=np.float64,
+    )
+    original_start_strictly_inside = bool(
+        np.all((smooth[0] > 0) & (smooth[0] < limits))
+    )
+    original_end_strictly_inside = bool(
+        np.all((smooth[-1] > 0) & (smooth[-1] < limits))
+    )
+    smooth, start_boundary, end_boundary = clip_curve_to_volume(
+        smooth,
+        limits,
     )
     points = resample_by_arc_length(
         smooth,
         float(geometry_config.get("arc_length_sampling_interval_px", 1.0)),
     )
+    start_status = corrected_endpoint_status(
+        start_status, start_boundary, original_start_strictly_inside
+    )
+    end_status = corrected_endpoint_status(
+        end_status, end_boundary, original_end_strictly_inside
+    )
+    if start_status != "boundary_truncation":
+        start_boundary = ()
+    if end_status != "boundary_truncation":
+        end_boundary = ()
     fluorophore_config = {
         **geometry_config.get("fluorophore", {}),
         **intensity_config,
@@ -414,6 +434,15 @@ def append_fiber(
     amplitude, radius = fluorophore_samples(
         len(points), fluorophore_config, rng
     )
+    radius_range = fluorophore_config.get("radius_range_px", [0.6, 1.2])
+    radius_variation = float(
+        fluorophore_config.get("radius_variation_amplitude", 0.15)
+    )
+    radius = np.clip(
+        radius,
+        float(radius_range[0]) * 0.3,
+        float(radius_range[1]) * (1.0 + 3.0 * radius_variation),
+    ).astype(np.float32)
     if supervised_samples is None:
         supervised_samples = np.ones(len(points), dtype=bool)
     elif len(supervised_samples) != len(points):
@@ -430,16 +459,24 @@ def append_fiber(
                 "type": "truncated_endpoint"
                 if start_status == "boundary_truncation"
                 else "endpoint",
-                "supervised_endpoint": start_status == "valid_endpoint",
+                "supervised_endpoint": (
+                    structure_type == "individual_filament"
+                    and start_status == "valid_endpoint"
+                ),
                 "termination_status": start_status,
+                "boundary_code": boundary_code(start_boundary),
             },
             {
                 "xyz": points[-1].astype(np.float32),
                 "type": "truncated_endpoint"
                 if end_status == "boundary_truncation"
                 else "endpoint",
-                "supervised_endpoint": end_status == "valid_endpoint",
+                "supervised_endpoint": (
+                    structure_type == "individual_filament"
+                    and end_status == "valid_endpoint"
+                ),
                 "termination_status": end_status,
+                "boundary_code": boundary_code(end_boundary),
             },
         ]
     )
@@ -459,7 +496,8 @@ def append_fiber(
             "supervised_centerline_sample": supervised_samples.astype(np.uint8),
             "trace_start_status": start_status,
             "trace_end_status": end_status,
-            "crossing_eligible": structure_type == "individual_filament",
+            "start_boundary_code": boundary_code(start_boundary),
+            "end_boundary_code": boundary_code(end_boundary),
         }
     )
     edges.append(
@@ -469,9 +507,107 @@ def append_fiber(
             "truncated_start": start_status == "boundary_truncation",
             "truncated_end": end_status == "boundary_truncation",
             "latent": structure_type != "individual_filament",
+            "supervised": structure_type == "individual_filament",
+            "structure_type": structure_type,
         }
     )
     return fid
+
+
+def corrected_endpoint_status(
+    status: str,
+    boundary: tuple[str, ...],
+    intended_endpoint_inside: bool,
+) -> str:
+    if not boundary:
+        return status
+    if (
+        intended_endpoint_inside
+        and status in {"terminates_in_bundle", "terminates_in_clump"}
+    ):
+        return status
+    return "boundary_truncation"
+
+
+def boundary_code(names: tuple[str, ...]) -> int:
+    return int(sum(BOUNDARY_CODES[name] for name in names))
+
+
+def boundary_names(
+    point: np.ndarray, limits: np.ndarray, tolerance: float = 1e-5
+) -> tuple[str, ...]:
+    names = []
+    for axis, (name, high) in enumerate(zip(("x", "y", "z"), limits)):
+        if abs(float(point[axis])) <= tolerance:
+            names.append(f"{name}_min")
+        if abs(float(point[axis]) - float(high)) <= tolerance:
+            names.append(f"{name}_max")
+    return tuple(names)
+
+
+def clip_curve_to_volume(
+    points: np.ndarray, limits: np.ndarray
+) -> tuple[np.ndarray, tuple[str, ...], tuple[str, ...]]:
+    """Keep the first contiguous in-volume polyline section.
+
+    Boundary intersections are inserted analytically. The curve is never
+    flattened onto an edge and terminates at its first exit.
+    """
+
+    points = np.asarray(points, dtype=np.float64)
+    output: list[np.ndarray] = []
+    start_clipped = False
+    end_clipped = False
+    for p0, p1 in zip(points[:-1], points[1:]):
+        interval = segment_box_interval(p0, p1, limits)
+        if interval is None:
+            if output:
+                break
+            continue
+        enter, exit_ = interval
+        direction = p1 - p0
+        q0 = p0 + enter * direction
+        q1 = p0 + exit_ * direction
+        if not output:
+            output.append(q0)
+            start_clipped = enter > 1e-9 or np.any(
+                (p0 < 0) | (p0 > limits)
+            )
+        if np.linalg.norm(q1 - output[-1]) > 1e-8:
+            output.append(q1)
+        if exit_ < 1 - 1e-9 or np.any((p1 < 0) | (p1 > limits)):
+            end_clipped = True
+            break
+    if len(output) < 2:
+        raise ValueError("fiber has no valid in-volume segment")
+    clipped = np.asarray(output, dtype=np.float32)
+    start_boundary = boundary_names(clipped[0], limits)
+    end_boundary = boundary_names(clipped[-1], limits)
+    if not start_clipped and not start_boundary:
+        start_boundary = ()
+    if not end_clipped and not end_boundary:
+        end_boundary = ()
+    return clipped, start_boundary, end_boundary
+
+
+def segment_box_interval(
+    p0: np.ndarray, p1: np.ndarray, limits: np.ndarray
+) -> tuple[float, float] | None:
+    enter, exit_ = 0.0, 1.0
+    direction = p1 - p0
+    for axis, limit in enumerate(limits):
+        if abs(float(direction[axis])) <= 1e-12:
+            if p0[axis] < 0 or p0[axis] > limit:
+                return None
+            continue
+        t0 = (0.0 - p0[axis]) / direction[axis]
+        t1 = (limit - p0[axis]) / direction[axis]
+        lo, hi = sorted((float(t0), float(t1)))
+        enter = max(enter, lo)
+        exit_ = min(exit_, hi)
+        if enter > exit_:
+            return None
+    return max(0.0, enter), min(1.0, exit_)
 
 
 def add_bundle(
@@ -516,11 +652,16 @@ def add_bundle(
         height,
         depth,
     )
+    axis_smooth = smooth_catmull_rom(
+        axis_raw,
+        int(config["geometry"].get("spline_samples_per_segment", 6)),
+    )
+    axis_smooth, _, _ = clip_curve_to_volume(
+        axis_smooth,
+        np.asarray([width - 1, height - 1, depth], dtype=np.float64),
+    )
     axis = resample_by_arc_length(
-        smooth_catmull_rom(
-            axis_raw,
-            int(config["geometry"].get("spline_samples_per_segment", 6)),
-        ),
+        axis_smooth,
         float(config["geometry"].get("arc_length_sampling_interval_px", 1.0)),
     )
     child_count = _integer_range(
@@ -589,10 +730,10 @@ def add_bundle(
                 structure_type="bundle_child",
                 parent_bundle_id=bundle_id,
                 supervised_samples=supervised_template,
-                start_status="valid_endpoint"
+                start_status="ambiguous_termination"
                 if partial
                 else "terminates_in_bundle",
-                end_status="valid_endpoint"
+                end_status="ambiguous_termination"
                 if partial
                 else "terminates_in_bundle",
             )
@@ -681,6 +822,9 @@ def add_clump(
         rng, clump_config.get("depth_extent_range", [8, 28])
     )
     radii = np.asarray([radius, radius * aspect, depth_extent], dtype=np.float32)
+    limits = np.asarray([width - 1, height - 1, depth], dtype=np.float32)
+    margin = np.minimum(radii, limits * 0.45)
+    center = np.clip(center, margin, limits - margin)
     internal_density = _uniform(
         rng, clump_config.get("internal_density_range", [0.5, 1.0])
     )
@@ -809,6 +953,45 @@ def morphology_geometry_to_arrays(
             "fiber_supervised_centerline_sample": np.concatenate(
                 [fiber["supervised_centerline_sample"] for fiber in fibers]
             ).astype(np.uint8),
+            "fiber_start_boundary_code": np.asarray(
+                [fiber.get("start_boundary_code", 0) for fiber in fibers],
+                dtype=np.uint8,
+            ),
+            "fiber_end_boundary_code": np.asarray(
+                [fiber.get("end_boundary_code", 0) for fiber in fibers],
+                dtype=np.uint8,
+            ),
+            "node_supervised": np.asarray(
+                [node.get("supervised_endpoint", False) for node in geometry["nodes"]],
+                dtype=np.uint8,
+            ),
+            "node_termination_status": np.asarray(
+                [
+                    TRACE_TERMINATION_STATUS_CODES.get(
+                        node.get("termination_status", "ambiguous_termination"),
+                        TRACE_TERMINATION_STATUS_CODES["ambiguous_termination"],
+                    )
+                    for node in geometry["nodes"]
+                ],
+                dtype=np.int16,
+            ),
+            "node_boundary_code": np.asarray(
+                [node.get("boundary_code", 0) for node in geometry["nodes"]],
+                dtype=np.uint8,
+            ),
+            "edge_supervised": np.asarray(
+                [edge.get("supervised", False) for edge in geometry["edges"]],
+                dtype=np.uint8,
+            ),
+            "edge_structure_type": np.asarray(
+                [
+                    FIBER_STRUCTURE_TYPE_CODES[
+                        edge.get("structure_type", "individual_filament")
+                    ]
+                    for edge in geometry["edges"]
+                ],
+                dtype=np.int16,
+            ),
         }
     )
     bundles = geometry["bundles"]

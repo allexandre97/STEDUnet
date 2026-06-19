@@ -146,6 +146,20 @@ targets:
   bundle_axis_radius_px: 1.0
   transition_radius_px: 3.0
   mark_transitions_uncertain: true
+  bundle_closing_iterations: 2
+  bundle_max_fill_distance_px: 5.0
+  bundle_max_hole_area_px: 128
+  clump_closing_iterations: 4
+  clump_max_fill_distance_px: 6.0
+  clump_max_hole_area_px: 96
+  min_bundle_width_px: 4.5
+  min_clump_area_px: 16
+  min_clump_solidity: 0.2
+  max_clump_dark_fraction: 0.2
+  max_clump_components_per_instance: 4
+  signal_alignment_acceptance:
+    min_nonzero_fraction: 0.05
+    max_visible_signal_outside_fraction: 0.75
   near_coplanar_depth_px: 8.0
   orientation_consensus_threshold: 0.95
   orientation_field_enabled: true

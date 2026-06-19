@@ -13,6 +13,7 @@ from .schema import (
     DATASET_SCHEMA_VERSION_3D,
     DATASET_SCHEMA_VERSION_3D_HARDENED,
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
 )
 
 
@@ -109,6 +110,7 @@ def validate_parent(
     compatible = {
         DATASET_SCHEMA_VERSION_3D_HARDENED,
         DATASET_SCHEMA_VERSION_3D,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }
     parent_schema = parent_meta.get("dataset_schema_version")

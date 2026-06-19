@@ -119,7 +119,7 @@ The authoritative visibility threshold is `optical_model.visible_signal_threshol
 
 PSF component weights use `weights_sum_to_one`. Core-plus-halo weights must be finite, nonnegative, have positive total, and sum to one without implicit normalization.
 
-The shared real-annotation vocabulary is defined in `docs/real_annotation_contract.md`. The normalized production path remains schema 0.5 and binary. The separate exploratory morphology path uses schema `synthetic_sted_3d_morphology_0.6.0` with background, individual-filament, bundle, clump, and uncertain/ignore classes.
+The shared real-annotation vocabulary is defined in `docs/real_annotation_contract.md`. The normalized production path remains schema 0.5 and binary. The separate exploratory morphology path uses schema `synthetic_sted_3d_morphology_0.7.0` with background, individual-filament, bundle, clump, and uncertain/ignore classes.
 
 Generate the normalized 3D review set with:
 
@@ -165,10 +165,20 @@ python scripts/generate_blank_composite_examples.py \
   --out examples/sted_blank_composites_morphology_review
 
 python scripts/build_morphology_review.py \
-  --config configs/synthetic_sted/morphology_heterogeneity_review.yaml
+  --config configs/synthetic_sted/morphology_heterogeneity_review.yaml \
+  --synthetic-dir examples/synthetic_sted_morphology_review \
+  --composite-dir examples/sted_blank_composites_morphology_review \
+  --previous-composite-dir examples/sted_blank_composites_3d_realism \
+  --artifact-dir calibration_artifacts/exploratory \
+  --out reports/synthetic_morphology_semantic_review \
+  --diagnostics-out calibration_artifacts/morphology_semantic_review
 ```
 
-The multiclass `semantic_class_mask` uses values `0`, `1`, `2`, `3`, and `255`. `semantic_mask` is the compatibility union of valid foreground classes 1–3. Bundle axes are bundle-level targets, not filament centerlines. Hidden bundle children and clump fragments remain synthetic-only latent geometry. Structural targets do not depend on the exploratory composite foreground scale, sampled from 1.0–2.0 for review examples.
+The multiclass `semantic_class_mask` uses values `0`, `1`, `2`, `3`, and `255`. `semantic_mask` is the compatibility union of valid foreground classes 1–3. Schema 0.7 exposes `supervised_membership_*` and `latent_geometry_membership_*` separately, plus numeric graph supervision and boundary flags. Bundle axes are bundle-level targets, not filament centerlines. Hidden bundle children and clump fragments remain synthetic-only latent geometry. Structural targets do not depend on the exploratory composite foreground scale, sampled from 1.0–2.0 for review examples.
+
+Boundary handling inserts the first analytic volume intersection and terminates the curve; it never flattens a sequence of points onto an edge. Only `valid_endpoint` trace ends enter `endpoint_map`. Resolved bundle-child segments may contribute filament crossings, while unresolved and transition segments remain crossing-ineligible.
+
+See `docs/synthetic_morphology_schema_migration.md` for the explicit 0.6-to-0.7 field migration.
 
 ## Real-blank compositing and blank QA
 

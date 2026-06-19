@@ -15,8 +15,16 @@ DATASET_SCHEMA_VERSION_3D_NORMALIZED = "synthetic_sted_3d_rasterizer_0.3.0"
 DATASET_SCHEMA_VERSION_3D_HARDENED = "synthetic_sted_3d_rasterizer_0.4.0"
 DATASET_SCHEMA_VERSION_3D = "synthetic_sted_3d_rasterizer_0.5.0"
 GENERATOR_VERSION_3D = "fibras_persistent_chain_3d_0.5.0"
-DATASET_SCHEMA_VERSION_3D_MORPHOLOGY = "synthetic_sted_3d_morphology_0.6.0"
-GENERATOR_VERSION_3D_MORPHOLOGY = "fibras_morphology_scene_3d_0.6.0"
+DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY = (
+    "synthetic_sted_3d_morphology_0.6.0"
+)
+GENERATOR_VERSION_3D_MORPHOLOGY_LEGACY = (
+    "fibras_morphology_scene_3d_0.6.0"
+)
+DATASET_SCHEMA_VERSION_3D_MORPHOLOGY = (
+    "synthetic_sted_3d_morphology_0.7.0"
+)
+GENERATOR_VERSION_3D_MORPHOLOGY = "fibras_morphology_scene_3d_0.7.0"
 
 GENERATOR_MODES = {
     "structural_test_2d",
@@ -66,6 +74,16 @@ FIBER_STRUCTURE_TYPE_CODES = {
     "individual_filament": 1,
     "bundle_child": 2,
     "clump_fragment": 3,
+}
+
+BOUNDARY_CODES = {
+    "none": 0,
+    "x_min": 1,
+    "x_max": 2,
+    "y_min": 4,
+    "y_max": 8,
+    "z_min": 16,
+    "z_max": 32,
 }
 
 REQUIRED_ARRAYS = {
@@ -166,7 +184,7 @@ REQUIRED_ARRAYS_3D = REQUIRED_ARRAYS_3D_HARDENED | {
     "projected_crossing_fiber_ids",
     "projected_crossing_segment_indices",
 }
-REQUIRED_ARRAYS_3D_MORPHOLOGY = REQUIRED_ARRAYS_3D | {
+REQUIRED_ARRAYS_3D_MORPHOLOGY_LEGACY = REQUIRED_ARRAYS_3D | {
     "semantic_class_mask",
     "individual_filament_mask",
     "bundle_mask",
@@ -213,6 +231,35 @@ REQUIRED_ARRAYS_3D_MORPHOLOGY = REQUIRED_ARRAYS_3D | {
     "trace_end_status",
     "trace_fiber_ids",
 }
+REQUIRED_ARRAYS_3D_MORPHOLOGY = (
+    REQUIRED_ARRAYS_3D_MORPHOLOGY_LEGACY
+    - {
+        "membership_y",
+        "membership_x",
+        "membership_instance_id",
+        "overlap_count",
+    }
+) | {
+    "supervised_membership_y",
+    "supervised_membership_x",
+    "supervised_membership_instance_id",
+    "supervised_membership_class_id",
+    "supervised_overlap_count",
+    "latent_geometry_membership_y",
+    "latent_geometry_membership_x",
+    "latent_geometry_membership_instance_id",
+    "latent_geometry_overlap_count",
+    "node_supervised",
+    "node_termination_status",
+    "node_boundary_code",
+    "edge_supervised",
+    "edge_structure_type",
+    "fiber_start_boundary_code",
+    "fiber_end_boundary_code",
+    "individual_filament_signal",
+    "bundle_signal",
+    "clump_signal",
+}
 
 REQUIRED_ARRAYS_BY_SCHEMA = {
     DATASET_SCHEMA_VERSION: REQUIRED_ARRAYS,
@@ -220,6 +267,9 @@ REQUIRED_ARRAYS_BY_SCHEMA = {
     DATASET_SCHEMA_VERSION_3D_NORMALIZED: REQUIRED_ARRAYS_3D_NORMALIZED,
     DATASET_SCHEMA_VERSION_3D_HARDENED: REQUIRED_ARRAYS_3D_HARDENED,
     DATASET_SCHEMA_VERSION_3D: REQUIRED_ARRAYS_3D,
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY: (
+        REQUIRED_ARRAYS_3D_MORPHOLOGY_LEGACY
+    ),
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY: REQUIRED_ARRAYS_3D_MORPHOLOGY,
 }
 

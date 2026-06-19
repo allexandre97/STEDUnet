@@ -48,11 +48,15 @@ def rasterize_3d_sample(
             arrays["semantic_class_mask"], [1, 2, 3]
         ).astype(np.uint8)
         arrays["ignore_mask"] = arrays["uncertain_ignore_mask"].copy()
+        alignment_report = class_signal_alignment(
+            arrays, visible_threshold, targets_config
+        )
     else:
         arrays["semantic_mask"] = select_semantic_mask(arrays, targets_config)
         arrays["ignore_mask"] = build_ignore_mask(
             arrays, targets_config, visible_threshold
         )
+        alignment_report = {}
     optional_report = apply_optional_targets(arrays, targets_config)
 
     render = arrays["total_clean_signal"].astype(np.float32) + float(output_config.get("background_level", 4.0))
@@ -69,6 +73,7 @@ def rasterize_3d_sample(
         **psf_report,
         **target_report,
         **optional_report,
+        **alignment_report,
         **mapping,
         "float_to_uint8_mapping": mapping,
         "semantic_mask_source": "semantic_class_union"
@@ -88,6 +93,84 @@ def rasterize_3d_sample(
         "clipping_fraction": float((int(mapping["clipped_low_count"]) + int(mapping["clipped_high_count"])) / render.size),
         "saturation_fraction": float(int(mapping["saturation_count"]) / render.size),
     }
+
+
+def class_signal_alignment(
+    arrays: dict[str, np.ndarray],
+    visible_threshold: float,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    classes = {
+        "individual_filament": (
+            arrays["individual_filament_mask"].astype(bool),
+            arrays["individual_filament_signal"],
+        ),
+        "bundle": (
+            arrays["bundle_mask"].astype(bool),
+            arrays["bundle_signal"],
+        ),
+        "clump": (
+            arrays["clump_mask"].astype(bool),
+            arrays["clump_signal"],
+        ),
+        "uncertain_transition": (
+            arrays["uncertain_ignore_mask"].astype(bool),
+            arrays["total_clean_signal"],
+        ),
+    }
+    uncertain = arrays["uncertain_ignore_mask"].astype(bool)
+    report = {}
+    for name, (mask, signal) in classes.items():
+        area = int(np.count_nonzero(mask))
+        values = signal[mask]
+        visible = signal > visible_threshold
+        compatible = mask if name == "uncertain_transition" else mask | uncertain
+        visible_energy = float(signal[visible].sum())
+        outside_energy = float(signal[visible & ~compatible].sum())
+        ridge = ridge_response(signal)
+        report[name] = {
+            "class_area_px": area,
+            "fraction_of_class_mask_above_visible_threshold": (
+                float(np.mean(values > visible_threshold)) if area else None
+            ),
+            "fraction_of_class_mask_with_nonzero_signal": (
+                float(np.mean(values > 0)) if area else None
+            ),
+            "fraction_of_visible_class_signal_outside_class_mask": (
+                outside_energy / visible_energy if visible_energy > 0 else 0.0
+            ),
+            "signal_p50_inside_class": percentile_or_none(values, 50),
+            "signal_p95_inside_class": percentile_or_none(values, 95),
+            "signal_p99_inside_class": percentile_or_none(values, 99),
+            "ridge_response_p50_inside_class": percentile_or_none(
+                ridge[mask], 50
+            ),
+            "ridge_response_p95_inside_class": percentile_or_none(
+                ridge[mask], 95
+            ),
+        }
+    return {
+        "class_signal_alignment": report,
+        "class_signal_alignment_acceptance": config.get(
+            "signal_alignment_acceptance", {}
+        ),
+        "class_signal_alignment_semantics": (
+            "class-attributed clean optical signal; PSF spill is measured "
+            "outside the class or configured uncertain-transition mask"
+        ),
+    }
+
+
+def ridge_response(image: np.ndarray) -> np.ndarray:
+    if scipy_ndimage is None:
+        return np.zeros_like(image, dtype=np.float32)
+    narrow = scipy_ndimage.gaussian_filter(image.astype(np.float32), 1.0)
+    broad = scipy_ndimage.gaussian_filter(image.astype(np.float32), 2.0)
+    return np.maximum(narrow - broad, 0).astype(np.float32)
+
+
+def percentile_or_none(values: np.ndarray, percentile: float) -> float | None:
+    return float(np.percentile(values, percentile)) if values.size else None
 
 
 def geometry_targets_3d(geometry: dict[str, Any], config: dict[str, Any], focal_depth: float) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
@@ -240,6 +323,12 @@ def morphology_targets_3d(
     arrays, report = standard_geometry_targets_3d(
         geometry, config, focal_depth
     )
+    arrays["latent_geometry_membership_y"] = arrays.pop("membership_y")
+    arrays["latent_geometry_membership_x"] = arrays.pop("membership_x")
+    arrays["latent_geometry_membership_instance_id"] = arrays.pop(
+        "membership_instance_id"
+    )
+    arrays["latent_geometry_overlap_count"] = arrays.pop("overlap_count")
     shape = tuple(geometry["image_shape"])
     centerline_radius = float(config.get("centerline_radius_px", 0.75))
     axis_radius = float(config.get("bundle_axis_radius_px", 1.0))
@@ -278,7 +367,9 @@ def morphology_targets_3d(
             supervised
         ):
             support = rasterize_variable_disks(
-                points[supervised, :2], radii[supervised], shape
+                points[supervised, :2],
+                np.maximum(radii[supervised], centerline_radius),
+                shape,
             )
             individual_raw |= support.astype(np.uint8)
             y, x = np.nonzero(support)
@@ -340,13 +431,33 @@ def morphology_targets_3d(
             draw_disk(clump_transition, points[-1, :2], transition_radius)
 
     bundle_memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    fibers_by_id = {
+        int(fiber["fiber_id"]): fiber for fiber in geometry["fibers"]
+    }
     for bundle in geometry["bundles"]:
         axis = bundle["axis_points_xyz"]
         radii = bundle["axis_radius_px"]
         unresolved = bundle["unresolved_sample"].astype(bool)
         if np.any(unresolved):
-            mask = rasterize_variable_disks(
+            envelope = rasterize_variable_disks(
                 axis[unresolved, :2], radii[unresolved], shape
+            )
+            child_support = np.zeros(shape, dtype=bool)
+            for fid in bundle["child_fiber_ids"]:
+                child = fibers_by_id[int(fid)]
+                hidden = ~child["supervised_centerline_sample"].astype(bool)
+                if np.any(hidden):
+                    child_support |= rasterize_variable_disks(
+                        child["points_xyz"][hidden, :2],
+                        child["sample_radius"][hidden],
+                        shape,
+                    )
+            mask = constrained_object_mask(
+                child_support,
+                envelope,
+                int(config.get("bundle_closing_iterations", 2)),
+                float(config.get("bundle_max_fill_distance_px", 5.0)),
+                int(config.get("bundle_max_hole_area_px", 128)),
             )
             bundle_raw |= mask.astype(np.uint8)
             y, x = np.nonzero(mask)
@@ -369,22 +480,23 @@ def morphology_targets_3d(
             draw_disk(bundle_transition, axis[index, :2], transition_radius)
 
     clump_memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-    fibers_by_id = {
-        int(fiber["fiber_id"]): fiber for fiber in geometry["fibers"]
-    }
     for clump in geometry["clumps"]:
-        mask = np.zeros(shape, dtype=bool)
+        support = np.zeros(shape, dtype=bool)
         scale = float(clump.get("edge_diffuseness", 1.0)) * 1.7
         for fid in clump["fragment_fiber_ids"]:
             fiber = fibers_by_id[int(fid)]
-            mask |= rasterize_variable_disks(
+            support |= rasterize_variable_disks(
                 fiber["points_xyz"][:, :2],
                 fiber["sample_radius"] * scale,
                 shape,
             )
-        if scipy_ndimage is not None and np.any(mask):
-            mask = scipy_ndimage.binary_closing(mask, iterations=2)
-            mask = scipy_ndimage.binary_fill_holes(mask)
+        mask = constrained_object_mask(
+            support,
+            None,
+            int(config.get("clump_closing_iterations", 2)),
+            float(config.get("clump_max_fill_distance_px", 4.0)),
+            int(config.get("clump_max_hole_area_px", 96)),
+        )
         clump_raw |= mask.astype(np.uint8)
         y, x = np.nonzero(mask)
         clump_memberships.append(
@@ -412,9 +524,13 @@ def morphology_targets_3d(
     filament_centerline &= individual
     bundle_axis &= bundle
     endpoint_map &= individual
-    arrays["projected_crossing_map"] &= individual
-    arrays["crossing_map"] = arrays["projected_crossing_map"].copy()
-    arrays["near_coplanar_crossing_map"] &= individual
+    filter_crossings_to_supervised_class(
+        arrays,
+        individual,
+        uncertain,
+        float(config.get("crossing_radius_px", 3.0)),
+        float(config.get("near_coplanar_depth_px", 8.0)),
+    )
     orientation_arrays = finalize_orientation_field(
         orientation_cos_sum,
         orientation_sin_sum,
@@ -422,6 +538,22 @@ def morphology_targets_3d(
         orientation_valid_instances,
         orientation_invalid_instances,
         config,
+    )
+    individual_membership_arrays = membership_arrays(
+        "individual_filament",
+        filter_memberships(individual_memberships, individual),
+    )
+    bundle_membership_arrays = membership_arrays(
+        "bundle", filter_memberships(bundle_memberships, bundle)
+    )
+    clump_membership_arrays = membership_arrays(
+        "clump", filter_memberships(clump_memberships, clump)
+    )
+    supervised_membership_arrays = combine_supervised_memberships(
+        shape,
+        individual_membership_arrays,
+        bundle_membership_arrays,
+        clump_membership_arrays,
     )
     arrays.update(
         {
@@ -456,16 +588,10 @@ def morphology_targets_3d(
             ),
             "trace_end_status": np.asarray(trace_end_status, dtype=np.int16),
             "trace_source": np.ones(len(trace_ids), dtype=np.int16),
-            **membership_arrays(
-                "individual_filament",
-                filter_memberships(individual_memberships, individual),
-            ),
-            **membership_arrays(
-                "bundle", filter_memberships(bundle_memberships, bundle)
-            ),
-            **membership_arrays(
-                "clump", filter_memberships(clump_memberships, clump)
-            ),
+            **individual_membership_arrays,
+            **bundle_membership_arrays,
+            **clump_membership_arrays,
+            **supervised_membership_arrays,
             **orientation_arrays,
         }
     )
@@ -488,6 +614,10 @@ def morphology_targets_3d(
             "supervised_centerline_source": "traceable individual-filament regions only; hidden bundle children and clump fragments excluded",
             "bundle_axis_semantics": "optional bundle-level axis; never an individual-filament centerline",
             "transition_semantics": "configured bundle/clump transition disks become uncertain_ignore and trace termination statuses",
+            "instance_supervision_semantics": {
+                "supervised_memberships": "class-specific masks plus supervised_membership_*; safe for loss functions",
+                "latent_geometry_memberships": "all generated curves including hidden bundle children and clump fragments; synthetic provenance only",
+            },
         }
     )
     return arrays, report
@@ -529,6 +659,117 @@ def filter_memberships(
     return output
 
 
+def combine_supervised_memberships(
+    shape: tuple[int, int],
+    *class_memberships: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    ys, xs, ids, classes = [], [], [], []
+    prefixes = ("individual_filament", "bundle", "clump")
+    for class_id, (prefix, arrays) in enumerate(
+        zip(prefixes, class_memberships), start=1
+    ):
+        y = arrays[f"{prefix}_membership_y"]
+        x = arrays[f"{prefix}_membership_x"]
+        instance_id = arrays[f"{prefix}_membership_instance_id"]
+        ys.append(y)
+        xs.append(x)
+        ids.append(instance_id)
+        classes.append(np.full(y.shape, class_id, dtype=np.uint8))
+    y = np.concatenate(ys).astype(np.int32)
+    x = np.concatenate(xs).astype(np.int32)
+    instance_id = np.concatenate(ids).astype(np.int32)
+    class_id = np.concatenate(classes).astype(np.uint8)
+    overlap = np.zeros(shape, dtype=np.uint16)
+    np.add.at(overlap, (y, x), 1)
+    return {
+        "supervised_membership_y": y,
+        "supervised_membership_x": x,
+        "supervised_membership_instance_id": instance_id,
+        "supervised_membership_class_id": class_id,
+        "supervised_overlap_count": overlap,
+    }
+
+
+def constrained_object_mask(
+    support: np.ndarray,
+    envelope: np.ndarray | None,
+    closing_iterations: int,
+    max_fill_distance_px: float,
+    max_hole_area_px: int,
+) -> np.ndarray:
+    if not np.any(support):
+        return support.astype(bool)
+    candidate = support.astype(bool)
+    if scipy_ndimage is not None and closing_iterations > 0:
+        candidate |= scipy_ndimage.binary_closing(
+            candidate, iterations=closing_iterations
+        )
+    distance = (
+        scipy_ndimage.distance_transform_edt(~support)
+        if scipy_ndimage is not None
+        else np.where(support, 0.0, np.inf)
+    )
+    if envelope is not None:
+        candidate |= envelope & (distance <= max_fill_distance_px)
+        candidate &= envelope | support
+    else:
+        candidate &= distance <= max_fill_distance_px
+    if scipy_ndimage is not None and max_hole_area_px > 0:
+        filled = scipy_ndimage.binary_fill_holes(candidate)
+        holes = filled & ~candidate
+        labels, count = scipy_ndimage.label(holes)
+        for label in range(1, count + 1):
+            hole = labels == label
+            if (
+                int(np.count_nonzero(hole)) <= max_hole_area_px
+                and float(np.max(distance[hole], initial=0.0))
+                <= max_fill_distance_px
+            ):
+                candidate[hole] = True
+    return candidate | support
+
+
+def filter_crossings_to_supervised_class(
+    arrays: dict[str, np.ndarray],
+    individual_mask: np.ndarray,
+    uncertain_mask: np.ndarray,
+    radius: float,
+    near_depth: float,
+) -> None:
+    points = arrays["projected_crossing_points_xy"]
+    if points.size:
+        x = np.clip(np.floor(points[:, 0]).astype(int), 0, individual_mask.shape[1] - 1)
+        y = np.clip(np.floor(points[:, 1]).astype(int), 0, individual_mask.shape[0] - 1)
+        keep = (individual_mask[y, x] > 0) & (uncertain_mask[y, x] == 0)
+    else:
+        keep = np.zeros(0, dtype=bool)
+    for name in [
+        "geometric_crossing_points_xy",
+        "projected_crossing_points_xy",
+        "projected_crossing_depths",
+        "projected_crossing_fiber_ids",
+        "projected_crossing_segment_indices",
+    ]:
+        arrays[name] = arrays[name][keep]
+    crossing_map = np.zeros_like(individual_mask, dtype=np.uint8)
+    near_map = np.zeros_like(individual_mask, dtype=np.uint8)
+    near_points = []
+    for point, depths in zip(
+        arrays["projected_crossing_points_xy"],
+        arrays["projected_crossing_depths"],
+    ):
+        draw_disk(crossing_map, point, radius)
+        if abs(float(depths[0]) - float(depths[1])) <= near_depth:
+            draw_disk(near_map, point, radius)
+            near_points.append(point)
+    arrays["projected_crossing_map"] = crossing_map & individual_mask
+    arrays["crossing_map"] = arrays["projected_crossing_map"].copy()
+    arrays["near_coplanar_crossing_map"] = near_map & individual_mask
+    arrays["near_coplanar_crossing_points_xy"] = np.asarray(
+        near_points, dtype=np.float32
+    ).reshape((-1, 2))
+
+
 def splat_geometry_signal(
     geometry: dict[str, Any],
     config: dict[str, Any],
@@ -540,6 +781,11 @@ def splat_geometry_signal(
     total_out = np.zeros((height, width), dtype=np.float32)
     total_core = np.zeros((height, width), dtype=np.float32)
     total_halo = np.zeros((height, width), dtype=np.float32)
+    class_signal = {
+        "individual_filament": np.zeros((height, width), dtype=np.float32),
+        "bundle": np.zeros((height, width), dtype=np.float32),
+        "clump": np.zeros((height, width), dtype=np.float32),
+    }
     weighted_depth = np.zeros((height, width), dtype=np.float64)
     weight_sum = np.zeros((height, width), dtype=np.float64)
     nearest_abs = np.full((height, width), np.inf, dtype=np.float32)
@@ -572,6 +818,32 @@ def splat_geometry_signal(
         total_out += fiber_out
         total_core += fiber_core
         total_halo += fiber_halo
+        unscaled_fiber_signal = fiber_in + fiber_out
+        structure = fiber.get("structure_type", "individual_filament")
+        if structure == "individual_filament":
+            class_signal["individual_filament"] += unscaled_fiber_signal
+        elif structure == "clump_fragment":
+            class_signal["clump"] += unscaled_fiber_signal
+        elif structure == "bundle_child":
+            supervised = fiber.get(
+                "supervised_centerline_sample",
+                np.zeros(len(fiber["points_xyz"]), dtype=np.uint8),
+            ).astype(bool)
+            for mask, target_name in [
+                (supervised, "individual_filament"),
+                (~supervised, "bundle"),
+            ]:
+                if not np.any(mask):
+                    continue
+                split = splat_points(
+                    fiber["points_xyz"][mask],
+                    fiber["sample_amplitude"][mask],
+                    ds[mask],
+                    float(geometry["focal_plane_z_px"]),
+                    config,
+                    (height, width),
+                )
+                class_signal[target_name] += split[0] + split[1]
         weighted_depth += contrib_depth
         weight_sum += contrib_weight
         closer = contrib_nearest_abs < nearest_abs
@@ -610,6 +882,21 @@ def splat_geometry_signal(
         "total_optical_signal": optical_total.astype(np.float32),
         "core_signal": total_core_scaled.astype(np.float32),
         "halo_signal": total_halo_scaled.astype(np.float32),
+        **(
+            {
+                "individual_filament_signal": (
+                    class_signal["individual_filament"] * foreground_scale
+                ).astype(np.float32),
+                "bundle_signal": (
+                    class_signal["bundle"] * foreground_scale
+                ).astype(np.float32),
+                "clump_signal": (
+                    class_signal["clump"] * foreground_scale
+                ).astype(np.float32),
+            }
+            if "bundles" in geometry and "clumps" in geometry
+            else {}
+        ),
         "visible_signal_mask": visible_signal,
         "visible_overlap_count": visible_overlap,
         "visible_membership_y": np.concatenate(visible_y).astype(np.int32) if visible_y else np.zeros(0, dtype=np.int32),
@@ -1049,13 +1336,7 @@ def projected_crossings(geometry: dict[str, Any], return_diagnostics: bool = Fal
 
 def projected_crossings_grid(geometry: dict[str, Any], cell_size: float = 32.0) -> tuple[list[dict[str, np.ndarray]], dict[str, int]]:
     shared = {int(edge["fiber_id"]): set(map(int, edge["node_indices"])) for edge in geometry["edges"]}
-    segments = []
-    for fiber in geometry["fibers"]:
-        if not fiber.get("crossing_eligible", True):
-            continue
-        fid = int(fiber["fiber_id"])
-        for seg_index, (p0, p1) in enumerate(zip(fiber["points_xyz"][:-1], fiber["points_xyz"][1:])):
-            segments.append((fid, seg_index, p0, p1))
+    segments = crossing_eligible_segments(geometry)
     segments.sort(key=lambda item: (item[0], item[1]))
     brute_force_pairs = 0
     for i, a in enumerate(segments):
@@ -1104,36 +1385,59 @@ def projected_crossings_grid(geometry: dict[str, Any], cell_size: float = 32.0) 
 def projected_crossings_bruteforce(geometry: dict[str, Any]) -> list[dict[str, np.ndarray]]:
     shared = {int(edge["fiber_id"]): set(map(int, edge["node_indices"])) for edge in geometry["edges"]}
     detections: list[dict[str, np.ndarray]] = []
-    fibers = sorted(
-        [
-            fiber
-            for fiber in geometry["fibers"]
-            if fiber.get("crossing_eligible", True)
-        ],
-        key=lambda fiber: int(fiber["fiber_id"]),
-    )
-    for i, fa in enumerate(fibers):
-        for fb in fibers[i + 1 :]:
-            if shared.get(int(fa["fiber_id"]), set()) & shared.get(int(fb["fiber_id"]), set()):
+    segments = crossing_eligible_segments(geometry)
+    for index, (fa, sa, a0, a1) in enumerate(segments):
+        for fb, sb, b0, b1 in segments[index + 1 :]:
+            if fa == fb or shared.get(fa, set()) & shared.get(fb, set()):
                 continue
-            for sa, (a0, a1) in enumerate(zip(fa["points_xyz"][:-1], fa["points_xyz"][1:])):
-                for sb, (b0, b1) in enumerate(zip(fb["points_xyz"][:-1], fb["points_xyz"][1:])):
-                    hit = segment_intersection(a0[:2], a1[:2], b0[:2], b1[:2])
-                    if hit is not None:
-                        za = _interp_z_at_hit(a0, a1, hit)
-                        zb = _interp_z_at_hit(b0, b1, hit)
-                        detections.append(
-                            crossing_record(
-                                int(fa["fiber_id"]),
-                                int(fb["fiber_id"]),
-                                sa,
-                                sb,
-                                hit,
-                                za,
-                                zb,
-                            )
-                        )
+            hit = segment_intersection(a0[:2], a1[:2], b0[:2], b1[:2])
+            if hit is not None:
+                detections.append(
+                    crossing_record(
+                        fa,
+                        fb,
+                        sa,
+                        sb,
+                        hit,
+                        _interp_z_at_hit(a0, a1, hit),
+                        _interp_z_at_hit(b0, b1, hit),
+                    )
+                )
     return deduplicate_crossings(detections)
+
+
+def crossing_eligible_segments(
+    geometry: dict[str, Any],
+) -> list[tuple[int, int, np.ndarray, np.ndarray]]:
+    """Return traceable segments only.
+
+    Bundle-child segments are eligible only when both endpoint samples are in a
+    resolved supervised run. Segments touching a resolved/unresolved transition
+    and all clump-fragment segments are excluded.
+    """
+
+    segments = []
+    for fiber in geometry["fibers"]:
+        structure = fiber.get("structure_type", "individual_filament")
+        if structure not in {"individual_filament", "bundle_child"}:
+            continue
+        points = fiber["points_xyz"]
+        supervised = fiber.get(
+            "supervised_centerline_sample",
+            np.ones(len(points), dtype=np.uint8),
+        ).astype(bool)
+        eligible = supervised[:-1] & supervised[1:]
+        fid = int(fiber["fiber_id"])
+        for segment_index in np.flatnonzero(eligible):
+            segments.append(
+                (
+                    fid,
+                    int(segment_index),
+                    points[segment_index],
+                    points[segment_index + 1],
+                )
+            )
+    return sorted(segments, key=lambda item: (item[0], item[1]))
 
 
 def _interp_z_at_hit(p0: np.ndarray, p1: np.ndarray, hit_xy: np.ndarray) -> float:
@@ -1249,6 +1553,9 @@ def apply_optional_targets(arrays: dict[str, np.ndarray], config: dict[str, Any]
     if "semantic_class_mask" in arrays:
         target_available.update(
             {
+                "instance_membership": False,
+                "supervised_instance_membership": True,
+                "latent_geometry_membership": True,
                 "semantic_class_mask": True,
                 "individual_filament_mask": True,
                 "bundle_mask": True,
@@ -1262,6 +1569,8 @@ def apply_optional_targets(arrays: dict[str, np.ndarray], config: dict[str, Any]
                 "bundle_instance_membership": True,
                 "clump_instance_membership": True,
                 "bundle_axis_vectors": True,
+                "graph_supervision_flags": True,
+                "class_attributed_optical_signal": True,
                 "latent_bundle_children": True,
                 "latent_clump_fragments": True,
             }

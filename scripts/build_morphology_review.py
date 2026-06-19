@@ -18,7 +18,13 @@ def main() -> int:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--synthetic-dir", required=True, type=Path)
     parser.add_argument("--composite-dir", required=True, type=Path)
-    parser.add_argument("--previous-dir", required=True, type=Path)
+    parser.add_argument(
+        "--previous-composite-dir",
+        "--previous-dir",
+        dest="previous_dir",
+        required=True,
+        type=Path,
+    )
     parser.add_argument("--artifact-dir", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--diagnostics-out", required=True, type=Path)

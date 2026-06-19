@@ -424,6 +424,16 @@ def composite_metadata(
                 "foreground_signal_convention": "arc-length weighted empirical line density convolved with unit-integral discrete PSF before real-blank addition",
             }
         )
+    if is_morphology:
+        for key in [
+            "multiclass_target_contract",
+            "graph_supervision",
+            "target_roles",
+        ]:
+            if key in (parent_metadata or {}):
+                metadata[key] = parent_metadata[key]
+        if "enum_mappings" in (parent_metadata or {}):
+            metadata["enum_mappings"] = parent_metadata["enum_mappings"]
     return metadata
 
 

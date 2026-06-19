@@ -16,9 +16,11 @@ Real images may be used condition-blind for image-formation calibration. Synthet
 | 3 | `clump` | Compact or amorphous structure without reliably traceable filament morphology. Do not assign an arbitrary filament skeleton. |
 | 255 | `uncertain_ignore` | Class, presence, or boundary is uncertain; exclude from applicable supervised losses. |
 
-Schema `synthetic_sted_3d_morphology_0.6.0` emits this multiclass target for exploratory morphology review while retaining a binary compatibility mask equal to the union of classes 1–3. Earlier 3D schemas remain binary and are not reinterpreted.
+Schema `synthetic_sted_3d_morphology_0.7.0` emits this multiclass target for exploratory morphology review while retaining a binary compatibility mask equal to the union of classes 1–3. Schema 0.6 remains readable under its original ambiguous generic-membership semantics and is not silently reinterpreted; use the documented migration before treating memberships as supervised.
 
 Synthetic bundles are correlated child filaments around a bundle axis. Their deliberately unresolved child centerlines are latent simulator provenance, not ordinary filament-centerline targets. Synthetic clumps are compact aggregates of short latent fragments and receive no filament centerline or endpoint target. These procedural structures broaden training-domain coverage; they are not claimed to reproduce real bundle or clump distributions.
+
+Schema 0.7 loss code may consume only arrays listed under metadata `target_roles.supervised`. Arrays under `target_roles.latent_synthetic_provenance` or `diagnostic_only` must not be used as labels. Bundle-child and clump-fragment graph edges are latent; their graph endpoints are not supervised biological endpoints.
 
 ## Trace termination statuses
 

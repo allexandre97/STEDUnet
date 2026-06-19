@@ -27,7 +27,7 @@ from .visibility import (
 )
 
 
-DIAGNOSTIC_FIELDS = [
+GROUND_TRUTH_FIELDS = [
     "foreground_occupancy",
     "individual_filament_area_fraction",
     "bundle_area_fraction",
@@ -42,11 +42,51 @@ DIAGNOSTIC_FIELDS = [
     "orientation_coherence_p50",
     "orientation_coherence_p90",
     "filament_length_represented_px",
+    "supervised_endpoint_count",
+    "valid_endpoint_trace_count",
+    "boundary_truncation_trace_count",
+    "terminates_in_bundle_trace_count",
+    "terminates_in_clump_trace_count",
+    "ambiguous_termination_trace_count",
+    "individual_filament_instance_count",
+    "bundle_instance_count",
+    "clump_instance_count",
+    "supervised_membership_count",
+    "latent_geometry_membership_count",
+    "supervised_edge_count",
+    "latent_edge_count",
+    "bundle_width_p50_px",
+    "clump_solidity_p50",
+    "clump_component_count",
+]
+
+IMAGE_PROXY_FIELDS = [
+    "foreground_occupancy",
+    "tile_occupancy_mean",
+    "tile_occupancy_variance",
+    "empty_tile_fraction",
+    "spatial_concentration_index",
+    "occupied_domain_count",
+    "occupied_domain_area_p50_tiles",
+    "orientation_coherence_p50",
+    "orientation_coherence_p90",
     "foreground_signal_p50",
     "foreground_signal_p95",
     "foreground_signal_p99",
     "clipping_fraction",
     "saturation_fraction",
+]
+
+ALIGNMENT_FIELDS = [
+    "class_area_px",
+    "fraction_of_class_mask_above_visible_threshold",
+    "fraction_of_class_mask_with_nonzero_signal",
+    "fraction_of_visible_class_signal_outside_class_mask",
+    "signal_p50_inside_class",
+    "signal_p95_inside_class",
+    "signal_p99_inside_class",
+    "ridge_response_p50_inside_class",
+    "ridge_response_p95_inside_class",
 ]
 
 
@@ -106,6 +146,7 @@ def generated_scene_diagnostics(
         "filament_length_represented_px": numeric(
             represented_filament_length(arrays)
         ),
+        **ground_truth_counts(arrays),
         "foreground_signal_p50": numeric(
             np.percentile(positive, 50) if positive.size else 0
         ),
@@ -122,6 +163,128 @@ def generated_scene_diagnostics(
             metadata.get("saturation_fraction", metadata.get("rendering_report", {}).get("saturation_fraction", 0))
         ),
     }
+
+
+def ground_truth_counts(arrays: dict[str, np.ndarray]) -> dict[str, str]:
+    fields = [
+        "supervised_endpoint_count",
+        "valid_endpoint_trace_count",
+        "boundary_truncation_trace_count",
+        "terminates_in_bundle_trace_count",
+        "terminates_in_clump_trace_count",
+        "ambiguous_termination_trace_count",
+        "individual_filament_instance_count",
+        "bundle_instance_count",
+        "clump_instance_count",
+        "supervised_membership_count",
+        "latent_geometry_membership_count",
+        "supervised_edge_count",
+        "latent_edge_count",
+        "bundle_width_p50_px",
+        "clump_solidity_p50",
+        "clump_component_count",
+    ]
+    if "semantic_class_mask" not in arrays:
+        return {field: "not_available" for field in fields}
+    status = np.concatenate(
+        [
+            arrays.get("trace_start_status", np.zeros(0, dtype=np.int16)),
+            arrays.get("trace_end_status", np.zeros(0, dtype=np.int16)),
+        ]
+    )
+    status_names = {
+        1: "valid_endpoint_trace_count",
+        2: "boundary_truncation_trace_count",
+        3: "terminates_in_bundle_trace_count",
+        4: "terminates_in_clump_trace_count",
+        5: "ambiguous_termination_trace_count",
+    }
+    out = {
+        name: str(int(np.count_nonzero(status == code)))
+        for code, name in status_names.items()
+    }
+    out.update(
+        {
+            "supervised_endpoint_count": str(
+                int(
+                    np.count_nonzero(
+                        arrays.get("node_supervised", np.zeros(0))
+                    )
+                )
+            ),
+            "individual_filament_instance_count": str(
+                len(
+                    np.unique(
+                        arrays.get(
+                            "individual_filament_membership_instance_id",
+                            np.zeros(0),
+                        )
+                    )
+                )
+            ),
+            "bundle_instance_count": str(
+                len(np.unique(arrays.get("bundle_ids", np.zeros(0))))
+            ),
+            "clump_instance_count": str(
+                len(np.unique(arrays.get("clump_ids", np.zeros(0))))
+            ),
+            "supervised_membership_count": str(
+                int(arrays.get("supervised_membership_y", np.zeros(0)).size)
+            ),
+            "latent_geometry_membership_count": str(
+                int(
+                    arrays.get(
+                        "latent_geometry_membership_y", np.zeros(0)
+                    ).size
+                )
+            ),
+            "supervised_edge_count": str(
+                int(np.count_nonzero(arrays.get("edge_supervised", np.zeros(0))))
+            ),
+            "latent_edge_count": str(
+                int(
+                    np.count_nonzero(
+                        ~arrays.get(
+                            "edge_supervised", np.ones(0, dtype=np.uint8)
+                        ).astype(bool)
+                    )
+                )
+            ),
+            "bundle_width_p50_px": numeric(bundle_width_p50(arrays)),
+            "clump_solidity_p50": numeric(clump_solidity_p50(arrays)),
+            "clump_component_count": str(
+                int(ndimage.label(arrays.get("clump_mask", np.zeros((1, 1))))[1])
+            ),
+        }
+    )
+    return out
+
+
+def bundle_width_p50(arrays: dict[str, np.ndarray]) -> float:
+    mask = arrays.get("bundle_mask")
+    axis = arrays.get("bundle_axis_mask")
+    if mask is None or axis is None or not np.any(axis):
+        return 0.0
+    distance = ndimage.distance_transform_edt(mask > 0)
+    return 2.0 * float(np.median(distance[axis.astype(bool)]))
+
+
+def clump_solidity_p50(arrays: dict[str, np.ndarray]) -> float:
+    ids = arrays.get("clump_ids", np.zeros(0))
+    values = []
+    for clump_id in ids:
+        selected = (
+            arrays["clump_membership_instance_id"] == int(clump_id)
+        )
+        mask = np.zeros_like(arrays["clump_mask"], dtype=bool)
+        mask[
+            arrays["clump_membership_y"][selected],
+            arrays["clump_membership_x"][selected],
+        ] = True
+        values.append(
+            float(mask.sum() / max(int(ndimage.binary_fill_holes(mask).sum()), 1))
+        )
+    return float(np.median(values)) if values else 0.0
 
 
 def real_scene_diagnostics(
@@ -195,8 +358,14 @@ def build_morphology_review(
     shared_range = real_fiber_display_range(
         artifact_dir, Path(config["source_roots"]["sted_fiber_data"])
     )
-    morphology_rows = dataset_diagnostics(composite_dir)
-    previous_rows = dataset_diagnostics(previous_dir)
+    morphology_ground_truth = dataset_diagnostics(composite_dir)
+    previous_ground_truth = dataset_diagnostics(previous_dir)
+    morphology_proxy_rows = dataset_proxy_diagnostics(
+        composite_dir, "new_morphology_composite_proxy"
+    )
+    previous_proxy_rows = dataset_proxy_diagnostics(
+        previous_dir, "previous_composite_proxy"
+    )
     real_rows = source_diagnostics(
         artifact_dir / "real_fiber_stats.csv",
         Path(config["source_roots"]["sted_fiber_data"]),
@@ -207,32 +376,66 @@ def build_morphology_review(
         Path(config["source_roots"]["sted_blank_data"]),
         "real_blank_proxy",
     )
-    all_rows = morphology_rows + previous_rows + real_rows + blank_rows
-    write_csv(diagnostics_dir / "spatial_heterogeneity_diagnostics.csv", all_rows)
-    summaries = {
-        kind: aggregate_numeric(
-            [row for row in all_rows if row["source_kind"] == kind],
-            DIAGNOSTIC_FIELDS,
+    ground_truth_rows = morphology_ground_truth + previous_ground_truth
+    proxy_rows = morphology_proxy_rows + previous_proxy_rows + real_rows + blank_rows
+    write_csv(
+        diagnostics_dir / "synthetic_ground_truth_diagnostics.csv",
+        ground_truth_rows,
+    )
+    write_csv(
+        diagnostics_dir / "matched_image_proxy_diagnostics.csv", proxy_rows
+    )
+    alignment_rows = write_class_signal_alignment(
+        composite_dir,
+        diagnostics_dir / "class_signal_alignment.csv",
+    )
+    alignment_summaries = {
+        class_name: aggregate_numeric(
+            [row for row in alignment_rows if row["class_name"] == class_name],
+            ALIGNMENT_FIELDS,
         )
-        for kind in sorted({row["source_kind"] for row in all_rows})
+        for class_name in sorted({row["class_name"] for row in alignment_rows})
+    }
+    ground_truth_summaries = {
+        kind: aggregate_numeric(
+            [row for row in ground_truth_rows if row["source_kind"] == kind],
+            GROUND_TRUTH_FIELDS,
+        )
+        for kind in sorted({row["source_kind"] for row in ground_truth_rows})
+    }
+    proxy_summaries = {
+        kind: aggregate_numeric(
+            [row for row in proxy_rows if row["source_kind"] == kind],
+            IMAGE_PROXY_FIELDS,
+        )
+        for kind in sorted({row["source_kind"] for row in proxy_rows})
     }
     mode_summaries = {
         mode: aggregate_numeric(
-            [row for row in morphology_rows if row["scene_mode"] == mode],
-            DIAGNOSTIC_FIELDS,
+            [
+                row
+                for row in morphology_ground_truth
+                if row["scene_mode"] == mode
+            ],
+            GROUND_TRUTH_FIELDS,
         )
-        for mode in sorted({row["scene_mode"] for row in morphology_rows})
+        for mode in sorted(
+            {row["scene_mode"] for row in morphology_ground_truth}
+        )
     }
-    (diagnostics_dir / "spatial_heterogeneity_summary.json").write_text(
+    (diagnostics_dir / "morphology_semantic_summary.json").write_text(
         json.dumps(
             {
                 "calibration_status": "exploratory_unpartitioned",
                 "condition_blind": True,
-                "groups": summaries,
+                "synthetic_ground_truth": ground_truth_summaries,
+                "matched_image_proxies": proxy_summaries,
                 "morphology_modes": mode_summaries,
+                "class_signal_alignment": alignment_summaries,
                 "warning": (
-                    "Real-image quantities are threshold-sensitive proxies and "
-                    "are not hard morphology targets."
+                    "Image proxies are threshold_sensitive, condition_blind, "
+                    "and not_biological_ground_truth. Exact synthetic targets "
+                    "are reported separately."
                 ),
             },
             indent=2,
@@ -260,13 +463,30 @@ def build_morphology_review(
     draw_zoom_contact_sheet(
         sample_records, out_dir / "morphology_zoom_regions.png", shared_range
     )
+    draw_supervision_contact_sheet(
+        sample_records,
+        out_dir / "supervised_vs_latent_geometry.png",
+        shared_range,
+    )
+    draw_signal_alignment_contact_sheet(
+        sample_records,
+        out_dir / "class_mask_signal_alignment.png",
+        shared_range,
+    )
+    draw_endpoint_crossing_contact_sheet(
+        sample_records,
+        out_dir / "endpoint_and_resolved_crossing_semantics.png",
+        shared_range,
+    )
     draw_diagnostic_summary(
-        summaries, out_dir / "spatial_heterogeneity_summary.png"
+        proxy_summaries, out_dir / "matched_image_proxy_summary.png"
     )
     write_morphology_report(
         out_dir / "report.md",
-        summaries,
+        ground_truth_summaries,
+        proxy_summaries,
         mode_summaries,
+        alignment_summaries,
         shared_range,
         sample_records,
     )
@@ -283,6 +503,47 @@ def dataset_diagnostics(dataset_dir: Path) -> list[dict[str, str]]:
         ) as data:
             arrays = {name: data[name].copy() for name in data.files}
         rows.append(generated_scene_diagnostics(arrays, metadata))
+    return rows
+
+
+def dataset_proxy_diagnostics(
+    dataset_dir: Path, source_kind: str
+) -> list[dict[str, str]]:
+    rows = []
+    for row in read_csv(dataset_dir / "dataset_manifest.csv"):
+        metadata = json.loads(
+            (dataset_dir / row["json_path"]).read_text(encoding="utf-8")
+        )
+        with np.load(dataset_dir / row["npz_path"], allow_pickle=False) as data:
+            image = data["render_uint8"].copy()
+        rows.append(real_scene_diagnostics(image, metadata["sample_id"], source_kind))
+    return rows
+
+
+def write_class_signal_alignment(
+    dataset_dir: Path, path: Path
+) -> list[dict[str, str]]:
+    rows = []
+    for manifest_row in read_csv(dataset_dir / "dataset_manifest.csv"):
+        metadata = json.loads(
+            (dataset_dir / manifest_row["json_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        for class_name, metrics in metadata.get("rendering_report", {}).get(
+            "class_signal_alignment", {}
+        ).items():
+            rows.append(
+                {
+                    "sample_id": metadata["sample_id"],
+                    "class_name": class_name,
+                    **{
+                        key: "not_available" if value is None else str(value)
+                        for key, value in metrics.items()
+                    },
+                }
+            )
+    write_csv(path, rows)
     return rows
 
 
@@ -542,6 +803,177 @@ def draw_zoom_contact_sheet(
     canvas.save(path, optimize=True)
 
 
+def draw_supervision_contact_sheet(
+    records: list[tuple[str, str, dict[str, np.ndarray]]],
+    path: Path,
+    shared_range: tuple[float, float],
+) -> None:
+    selected = records[:2] + [
+        record
+        for record in records
+        if record[1] in {"bundle_dominated", "mixed_morphology"}
+    ][:2]
+    tile = 224
+    canvas = Image.new("RGB", (tile * 2, tile * len(selected) + 24), "white")
+    draw = ImageDraw.Draw(canvas)
+    draw.text((5, 4), "Supervised targets versus latent geometry provenance", fill="black")
+    for row, (sample_id, _, arrays) in enumerate(selected):
+        base = scale_for_display(arrays["render_uint8"], *shared_range)
+        supervised = class_overlay(base, arrays)
+        latent = gray_rgb(base).astype(np.float32)
+        latent_mask = arrays["latent_geometry_overlap_count"] > 0
+        supervised_mask = arrays["supervised_overlap_count"] > 0
+        latent[latent_mask] = 0.3 * latent[latent_mask] + 0.7 * np.asarray(
+            (255, 40, 40)
+        )
+        latent[supervised_mask] = 0.2 * latent[supervised_mask] + 0.8 * np.asarray(
+            (0, 220, 255)
+        )
+        for col, (label, panel) in enumerate(
+            [("supervised classes", supervised), ("latent red / supervised cyan", latent.astype(np.uint8))]
+        ):
+            x, y = col * tile, row * tile + 22
+            canvas.paste(Image.fromarray(panel).resize((tile, tile)), (x, y))
+            draw.rectangle((x, y, x + tile, y + 18), fill="black")
+            draw.text((x + 3, y + 3), f"{label} | {sample_id[-4:]}", fill="white")
+    canvas.save(path, optimize=True)
+
+
+def draw_signal_alignment_contact_sheet(
+    records: list[tuple[str, str, dict[str, np.ndarray]]],
+    path: Path,
+    shared_range: tuple[float, float],
+) -> None:
+    selected = [
+        record
+        for record in records
+        if record[1] in {"bundle_dominated", "clump_dominated", "mixed_morphology"}
+    ][:3]
+    tile = 210
+    canvas = Image.new("RGB", (tile * 4, tile * len(selected) + 24), "white")
+    draw = ImageDraw.Draw(canvas)
+    draw.text((5, 4), "Class masks and attributed clean optical signal", fill="black")
+    for row, (sample_id, _, arrays) in enumerate(selected):
+        base = scale_for_display(arrays["render_uint8"], *shared_range)
+        panels = [("class overlay", class_overlay(base, arrays))]
+        for class_name, mask_name in [
+            ("filament signal", "individual_filament"),
+            ("bundle signal", "bundle"),
+            ("clump signal", "clump"),
+        ]:
+            signal, _ = robust_display(
+                arrays[f"{mask_name}_signal"], (0.5, 99.5)
+            )
+            panels.append(
+                (
+                    class_name,
+                    mask_overlay(
+                        signal,
+                        arrays[f"{mask_name}_mask"],
+                        (255, 140, 0),
+                    ),
+                )
+            )
+        for col, (label, panel) in enumerate(panels):
+            x, y = col * tile, row * tile + 22
+            canvas.paste(Image.fromarray(panel).resize((tile, tile)), (x, y))
+            draw.rectangle((x, y, x + tile, y + 18), fill="black")
+            draw.text((x + 3, y + 3), f"{label} | {sample_id[-4:]}", fill="white")
+    canvas.save(path, optimize=True)
+
+
+def draw_endpoint_crossing_contact_sheet(
+    records: list[tuple[str, str, dict[str, np.ndarray]]],
+    path: Path,
+    shared_range: tuple[float, float],
+) -> None:
+    boundary_record = next(
+        (
+            record
+            for record in records
+            if np.any(record[2].get("node_boundary_code", np.zeros(0)))
+        ),
+        records[0],
+    )
+    crossing_record = next(
+        (
+            record
+            for record in records
+            if resolved_bundle_crossing_mask(record[2]).any()
+        ),
+        records[0],
+    )
+    panels = []
+    for label, record in [
+        ("endpoint / boundary", boundary_record),
+        ("resolved bundle-child crossing", crossing_record),
+    ]:
+        sample_id, _, arrays = record
+        base = gray_rgb(
+            scale_for_display(arrays["render_uint8"], *shared_range)
+        ).astype(np.float32)
+        endpoint = arrays["endpoint_map"].astype(bool)
+        boundary = point_mask(
+            arrays["node_xy"],
+            arrays.get("node_boundary_code", np.zeros(0)) > 0,
+            endpoint.shape,
+        )
+        crossing = resolved_bundle_crossing_mask(arrays)
+        base[endpoint] = (0, 255, 80)
+        base[boundary] = (255, 40, 40)
+        base[crossing] = (255, 0, 255)
+        focus = boundary | crossing | endpoint
+        panel = (
+            crop_around_mask(base.astype(np.uint8), focus, 256)
+            if np.any(focus)
+            else base.astype(np.uint8)
+        )
+        panels.append((label, sample_id, panel))
+    tile = 300
+    canvas = Image.new("RGB", (tile * 2, tile + 24), "white")
+    draw = ImageDraw.Draw(canvas)
+    draw.text(
+        (5, 4),
+        "Green valid endpoint; red boundary truncation; magenta resolved crossing",
+        fill="black",
+    )
+    for index, (label, sample_id, panel) in enumerate(panels):
+        x = index * tile
+        canvas.paste(Image.fromarray(panel).resize((tile, tile)), (x, 22))
+        draw.rectangle((x, 22, x + tile, 40), fill="black")
+        draw.text((x + 3, 25), f"{label} | {sample_id[-4:]}", fill="white")
+    canvas.save(path, optimize=True)
+
+
+def point_mask(
+    points_xy: np.ndarray,
+    selected: np.ndarray,
+    shape: tuple[int, int],
+) -> np.ndarray:
+    mask = np.zeros(shape, dtype=bool)
+    for point in points_xy[selected]:
+        x = int(np.clip(round(float(point[0])), 0, shape[1] - 1))
+        y = int(np.clip(round(float(point[1])), 0, shape[0] - 1))
+        mask[max(0, y - 2) : y + 3, max(0, x - 2) : x + 3] = True
+    return mask
+
+
+def resolved_bundle_crossing_mask(arrays: dict[str, np.ndarray]) -> np.ndarray:
+    mask = np.zeros_like(arrays["semantic_mask"], dtype=bool)
+    fiber_types = dict(
+        zip(map(int, arrays["fiber_ids"]), map(int, arrays["fiber_structure_type"]))
+    )
+    for point, pair in zip(
+        arrays["projected_crossing_points_xy"],
+        arrays["projected_crossing_fiber_ids"],
+    ):
+        if any(fiber_types[int(fiber_id)] == 2 for fiber_id in pair):
+            x = int(np.clip(round(float(point[0])), 0, mask.shape[1] - 1))
+            y = int(np.clip(round(float(point[1])), 0, mask.shape[0] - 1))
+            mask[max(0, y - 3) : y + 4, max(0, x - 3) : x + 4] = True
+    return mask
+
+
 def crop_around_mask(
     image: np.ndarray, mask: np.ndarray, size: int
 ) -> np.ndarray:
@@ -557,8 +989,8 @@ def draw_diagnostic_summary(
     summaries: dict[str, dict[str, dict[str, float]]], path: Path
 ) -> None:
     groups = [
-        "morphology_scene",
-        "previous_uniform_synthetic",
+        "new_morphology_composite_proxy",
+        "previous_composite_proxy",
         "real_fiber_proxy",
         "real_blank_proxy",
     ]
@@ -570,7 +1002,11 @@ def draw_diagnostic_summary(
     ]
     canvas = Image.new("RGB", (900, 430), "white")
     draw = ImageDraw.Draw(canvas)
-    draw.text((10, 10), "Spatial heterogeneity diagnostic medians", fill="black")
+    draw.text(
+        (10, 10),
+        "Matched image-proxy medians: threshold-sensitive, condition-blind",
+        fill="black",
+    )
     colors = [(30, 120, 210), (70, 170, 80), (190, 70, 80), (120, 120, 120)]
     for metric_index, metric in enumerate(metrics):
         values = [
@@ -591,8 +1027,10 @@ def draw_diagnostic_summary(
 
 def write_morphology_report(
     path: Path,
-    summaries: dict[str, dict[str, dict[str, float]]],
+    ground_truth_summaries: dict[str, dict[str, dict[str, float]]],
+    proxy_summaries: dict[str, dict[str, dict[str, float]]],
     mode_summaries: dict[str, dict[str, dict[str, float]]],
+    alignment_summaries: dict[str, dict[str, dict[str, float]]],
     shared_range: tuple[float, float],
     records: list[tuple[str, str, dict[str, np.ndarray]]],
 ) -> None:
@@ -600,34 +1038,32 @@ def write_morphology_report(
         "# Synthetic STED morphology heterogeneity review",
         "",
         "- calibration_status: `exploratory_unpartitioned`",
-        "- schema: `synthetic_sted_3d_morphology_0.6.0`",
+        "- schema: `synthetic_sted_3d_morphology_0.7.0`",
         "- Morphology generation is condition-blind and broadly randomized.",
         "- Real-image measurements are coarse threshold-sensitive diagnostics, not fitted biological targets.",
         "- Composite foreground scale is sampled deterministically from `1.0–2.0`.",
         f"- Shared display range: `{shared_range[0]:.6g}` to `{shared_range[1]:.6g}`.",
         f"- Review samples: `{len(records)}`.",
         "",
-        "## Median spatial diagnostics",
+        "## A. Synthetic ground-truth morphology diagnostics",
         "",
-        "| Group | Foreground occupancy | Tile variance | Empty tiles | Concentration | Orientation coherence | Bundle fraction | Clump fraction |",
+        "| Group | Foreground occupancy | Tile variance | Endpoints | Supervised memberships | Latent memberships | Bundle width | Clump solidity |",
         "|:--|--:|--:|--:|--:|--:|--:|--:|",
     ]
     for group in [
         "morphology_scene",
         "previous_uniform_synthetic",
-        "real_fiber_proxy",
-        "real_blank_proxy",
     ]:
-        summary = summaries.get(group, {})
+        summary = ground_truth_summaries.get(group, {})
         value = lambda key: report_value(summary, key)
         lines.append(
             f"| `{group}` | {value('foreground_occupancy')} | "
             f"{value('tile_occupancy_variance')} | "
-            f"{value('empty_tile_fraction')} | "
-            f"{value('spatial_concentration_index')} | "
-            f"{value('orientation_coherence_p50')} | "
-            f"{value('bundle_area_fraction')} | "
-            f"{value('clump_area_fraction')} |"
+            f"{value('supervised_endpoint_count')} | "
+            f"{value('supervised_membership_count')} | "
+            f"{value('latent_geometry_membership_count')} | "
+            f"{value('bundle_width_p50_px')} | "
+            f"{value('clump_solidity_p50')} |"
         )
     lines.extend(
         [
@@ -650,13 +1086,68 @@ def write_morphology_report(
     lines.extend(
         [
             "",
+            "## Class-mask and rendered-signal alignment",
+            "",
+            "| Class | Area px | Nonzero mask fraction | Visible mask fraction | Visible signal outside compatible mask | Signal p95 | Ridge p95 |",
+            "|:--|--:|--:|--:|--:|--:|--:|",
+        ]
+    )
+    for class_name in [
+        "individual_filament",
+        "bundle",
+        "clump",
+        "uncertain_transition",
+    ]:
+        summary = alignment_summaries.get(class_name, {})
+        value = lambda key: report_value(summary, key)
+        lines.append(
+            f"| `{class_name}` | {value('class_area_px')} | "
+            f"{value('fraction_of_class_mask_with_nonzero_signal')} | "
+            f"{value('fraction_of_class_mask_above_visible_threshold')} | "
+            f"{value('fraction_of_visible_class_signal_outside_class_mask')} | "
+            f"{value('signal_p95_inside_class')} | "
+            f"{value('ridge_response_p95_inside_class')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## B. Matched image-proxy diagnostics",
+            "",
+            "All rows below use identical thresholding, ridge/orientation processing, tile size, and connected-component settings. Metrics are `threshold_sensitive`, `condition_blind`, and `not_biological_ground_truth`.",
+            "",
+            "| Group | Occupancy proxy | Tile variance | Empty tiles | Concentration | Orientation coherence | Signal p95 |",
+            "|:--|--:|--:|--:|--:|--:|--:|",
+        ]
+    )
+    for group in [
+        "new_morphology_composite_proxy",
+        "previous_composite_proxy",
+        "real_fiber_proxy",
+        "real_blank_proxy",
+    ]:
+        summary = proxy_summaries.get(group, {})
+        value = lambda key: report_value(summary, key)
+        lines.append(
+            f"| `{group}` | {value('foreground_occupancy')} | "
+            f"{value('tile_occupancy_variance')} | "
+            f"{value('empty_tile_fraction')} | "
+            f"{value('spatial_concentration_index')} | "
+            f"{value('orientation_coherence_p50')} | "
+            f"{value('foreground_signal_p95')} |"
+        )
+    lines.extend(
+        [
+            "",
             "The heterogeneous generator is evaluated for increased spatial variation only. No table entry is a biological matching claim.",
             "",
             "## Review assets",
             "",
             "- [Morphology mode contact sheet](morphology_modes_contact_sheet.png)",
             "- [Morphology transition and structure zooms](morphology_zoom_regions.png)",
-            "- [Spatial diagnostic summary](spatial_heterogeneity_summary.png)",
+            "- [Supervised versus latent geometry](supervised_vs_latent_geometry.png)",
+            "- [Class masks versus signal](class_mask_signal_alignment.png)",
+            "- [Endpoint and resolved-crossing semantics](endpoint_and_resolved_crossing_semantics.png)",
+            "- [Matched image-proxy summary](matched_image_proxy_summary.png)",
             "- Full local per-sample panels are generated under `full_samples/` and remain ignored by Git.",
         ]
     )

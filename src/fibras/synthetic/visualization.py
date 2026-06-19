@@ -42,12 +42,15 @@ def draw_overlay(arrays: dict[str, np.ndarray], out_path: Path) -> None:
     overlay(rgb, arrays["endpoint_map"], (0, 255, 0), 0.9)
     overlay(rgb, arrays["junction_map"], (255, 0, 0), 0.9)
     overlay(rgb, arrays["crossing_map"], (255, 0, 255), 0.9)
-    overlap_mask = arrays["overlap_count"] > 1
+    overlap = arrays.get(
+        "supervised_overlap_count", arrays.get("overlap_count")
+    )
+    overlap_mask = overlap > 1
     overlay(rgb, overlap_mask.astype(np.uint8), (0, 255, 255), 0.7)
     image = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8), mode="RGB")
     draw = ImageDraw.Draw(image)
-    points = arrays["fiber_points_xy"]
-    offsets = arrays["fiber_point_offsets"]
+    points = arrays.get("trace_points_xy", arrays["fiber_points_xy"])
+    offsets = arrays.get("trace_point_offsets", arrays["fiber_point_offsets"])
     for start, end in zip(offsets[:-1], offsets[1:]):
         xy = [tuple(map(float, p)) for p in points[start:end]]
         if len(xy) > 1:
