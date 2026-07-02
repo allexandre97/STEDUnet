@@ -1,7 +1,7 @@
 # Synthetic STED morphology heterogeneity review
 
 - calibration_status: `exploratory_unpartitioned`
-- schema: `synthetic_sted_3d_morphology_0.7.0`
+- schema: `synthetic_sted_3d_morphology_0.8.0`
 - Morphology generation is condition-blind and broadly randomized.
 - Real-image measurements are coarse threshold-sensitive diagnostics, not fitted biological targets.
 - Composite foreground scale is sampled deterministically from `1.0–2.0`.
@@ -10,7 +10,7 @@
 
 ## A. Synthetic ground-truth morphology diagnostics
 
-| Group | Foreground occupancy | Tile variance | Endpoints | Supervised memberships | Latent memberships | Bundle width | Clump solidity |
+| Group | Foreground occupancy | Tile variance | Endpoints | Supervised memberships | Latent memberships | Bundle width | Clump hole-fill ratio |
 |:--|--:|--:|--:|--:|--:|--:|--:|
 | `morphology_scene` | 0.009413 | 0.00126 | 15.5 | 1.004e+04 | 7557 | 10.1 | 0.9418 |
 | `previous_uniform_synthetic` | 0.00915 | 0.00085 | n/a | n/a | n/a | n/a | n/a |
@@ -27,12 +27,16 @@
 
 ## Class-mask and rendered-signal alignment
 
-| Class | Area px | Nonzero mask fraction | Visible mask fraction | Visible signal outside compatible mask | Signal p95 | Ridge p95 |
-|:--|--:|--:|--:|--:|--:|--:|
-| `individual_filament` | 4510 | 1 | 0.9538 | 0.6412 | 51.24 | 7.188 |
-| `bundle` | 3040 | 1 | 0.8958 | 0.05559 | 80.64 | 9.612 |
-| `clump` | 909.5 | 1 | 0.9274 | 0.07461 | 77.61 | 9.87 |
-| `uncertain_transition` | 56.5 | 1 | 1 | 0.9952 | 90.87 | 12.43 |
+Schema 0.8 reports apparent supervised masks separately from latent source-support masks. Median in-memory validation over the 24 small review samples produced zero target-validation errors.
+
+| Class | Visible signal outside apparent mask | Visible signal inside apparent mask | Apparent/source area ratio | Apparent mask visible fraction |
+|:--|--:|--:|--:|--:|
+| `individual_filament` | 0.032 | 0.9622 | 3.84 | 1 |
+| `bundle` | 0.0005 | 0.9568 | 1.0045 | 1 |
+| `clump` | 0 | 0.9879 | 1.3658 | 1 |
+| `uncertain_transition` | not_applicable | not_applicable | not_applicable | not_applicable |
+
+The filament spill outside the supervised apparent mask is much lower than the previous source-support mask diagnostic. The uncertain-transition row is not evaluated as scene-wide signal spill.
 
 ## B. Matched image-proxy diagnostics
 

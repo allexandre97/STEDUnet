@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
@@ -18,6 +20,12 @@ from .morphology3d import (
 )
 from .rendering import render_image
 from .rasterizer3d import measure_isolated_fiber_fwhm, rasterize_3d_sample
+from .real_compatible import (
+    REAL_COMPATIBLE_SUPERVISED_TARGETS,
+    SYNTHETIC_ONLY_NOT_REAL_SUPERVISED,
+    build_real_compatible_targets,
+    validate_real_compatible_targets,
+)
 from .schema import (
     BOUNDARY_CODES,
     CALIBRATION_STATUSES,
@@ -27,12 +35,14 @@ from .schema import (
     DATASET_SCHEMA_VERSION_3D_LEGACY,
     DATASET_SCHEMA_VERSION_3D_NORMALIZED,
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7,
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
     FIBER_STRUCTURE_TYPE_CODES,
     GENERATOR_MODES,
     GENERATOR_VERSION,
     GENERATOR_VERSION_3D,
     GENERATOR_VERSION_3D_MORPHOLOGY,
+    GENERATOR_VERSION_3D_MORPHOLOGY_0_7,
     GENERATOR_VERSION_3D_MORPHOLOGY_LEGACY,
     NODE_TYPES,
     REAL_SEMANTIC_CLASSES,
@@ -52,8 +62,23 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+THREAD_ENV_VARS = [
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+]
+
+
+def set_worker_thread_limits() -> None:
+    for name in THREAD_ENV_VARS:
+        os.environ.setdefault(name, "1")
+
+
 def build_sample(config: dict[str, Any], sample_index: int) -> tuple[str, dict[str, np.ndarray], dict[str, Any]]:
     sample_id = f"{config.get('dataset_name', 'synthetic_sted')}_{sample_index:04d}"
+    config = sample_config(config, sample_index)
+    config["dataset_name"] = sample_id.rsplit("_", 1)[0]
     mode = generator_mode(config)
     if mode == "persistent_chain_3d":
         return build_sample_3d(config, sample_index, sample_id)
@@ -76,6 +101,36 @@ def build_sample(config: dict[str, Any], sample_index: int) -> tuple[str, dict[s
     arrays["render_uint8"] = render_uint8
     metadata = metadata_for_sample(sample_id, config, sample_index, geometry, arrays, geometry_seed, rendering_seed, clip_stats)
     return sample_id, arrays, metadata
+
+
+def sample_config(config: dict[str, Any], sample_index: int) -> dict[str, Any]:
+    variants = config.get("sample_variants")
+    if not variants:
+        return dict(config)
+    sequence = variants.get("sequence", [])
+    definitions = variants.get("definitions", {})
+    if not sequence:
+        raise ValueError("sample_variants.sequence must not be empty")
+    name = str(sequence[sample_index % len(sequence)])
+    if name not in definitions:
+        raise ValueError(f"sample_variants definition not found: {name}")
+    merged = deep_merge_dicts(
+        {key: value for key, value in config.items() if key != "sample_variants"},
+        definitions[name],
+    )
+    merged["sample_variant"] = name
+    merged["sample_variant_sequence_period"] = len(sequence)
+    return merged
+
+
+def deep_merge_dicts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def generator_mode(config: dict[str, Any]) -> str:
@@ -125,6 +180,7 @@ def build_sample_morphology(
         rendering_seed,
     )
     arrays.update(raster_arrays)
+    arrays.update(build_real_compatible_targets(arrays))
     metadata = metadata_for_sample_3d(
         sample_id,
         config,
@@ -139,7 +195,11 @@ def build_sample_morphology(
         mode="morphology_scene_3d",
     )
     metadata["schema_migration"] = (
-        "0.7.0 replaces ambiguous schema-0.6 generic memberships with explicit "
+        "0.8.0 separates latent source-support masks from apparent visible "
+        "supervised semantic masks derived from class-attributed optical signal; "
+        "0.7.0 remains readable under its original source-support class-mask "
+        "semantics and is not silently reinterpreted. 0.7.0 replaces ambiguous "
+        "schema-0.6 generic memberships with explicit "
         "supervised and latent geometry arrays, adds graph/boundary supervision "
         "flags and class-attributed optical signals; schema 0.6 remains "
         "supported under its original field meanings and is not reinterpreted"
@@ -149,7 +209,7 @@ def build_sample_morphology(
             "current_binary_semantic_mask": False,
             "multiclass_semantic_mask": "semantic_class_mask",
             "bundle_and_clump_generation": "implemented_as_exploratory_synthetic_morphology",
-            "centerline_supervision": "individual_filament class only",
+            "centerline_supervision": "individual_filament class only; real-compatible skeleton additionally exposes bundle axes",
             "clump_centerline_target": "not_available",
             "trace_status_codes": TRACE_TERMINATION_STATUS_CODES,
             "loss_eligible_arrays": [
@@ -161,8 +221,6 @@ def build_sample_morphology(
                 "uncertain_ignore_mask",
                 "filament_centerline_mask",
                 "bundle_axis_mask",
-                "endpoint_map",
-                "projected_crossing_map",
                 "supervised_membership_y",
                 "supervised_membership_x",
                 "supervised_membership_instance_id",
@@ -170,6 +228,11 @@ def build_sample_morphology(
                 "supervised_overlap_count",
             ],
             "latent_provenance_arrays_are_not_loss_targets": True,
+            "real_compatible_training_view": {
+                "semantic": "individual_filament and bundle collapse to fibrous_tau; clump stays clump; uncertain_ignore stays 255",
+                "skeleton": "filament_centerline_mask OR bundle_axis_mask, clipped to fibrous_tau",
+                "recommended_first_training_targets": REAL_COMPATIBLE_SUPERVISED_TARGETS,
+            },
         }
     )
     metadata["multiclass_target_contract"] = {
@@ -185,8 +248,6 @@ def build_sample_morphology(
             "uncertain_ignore_mask",
             "filament_centerline_mask",
             "bundle_axis_mask",
-            "endpoint_map",
-            "projected_crossing_map",
             "supervised_membership_y",
             "supervised_membership_x",
             "supervised_membership_instance_id",
@@ -194,6 +255,9 @@ def build_sample_morphology(
             "supervised_overlap_count",
         ],
         "latent_synthetic_provenance": [
+            "individual_filament_source_support_mask",
+            "bundle_source_support_mask",
+            "clump_source_support_mask",
             "fiber_structure_type",
             "fiber_parent_bundle_id",
             "fiber_parent_clump_id",
@@ -204,10 +268,9 @@ def build_sample_morphology(
             "latent_geometry_membership_x",
             "latent_geometry_membership_instance_id",
             "latent_geometry_overlap_count",
-            "individual_filament_signal",
-            "bundle_signal",
-            "clump_signal",
         ],
+        "real_compatible_supervised": REAL_COMPATIBLE_SUPERVISED_TARGETS,
+        "synthetic_only_not_real_supervised": SYNTHETIC_ONLY_NOT_REAL_SUPERVISED,
     }
     metadata["graph_supervision"] = {
         "node_supervised": "1 only for supervised biological endpoint nodes",
@@ -222,6 +285,7 @@ def build_sample_morphology(
         "supervised": metadata["multiclass_target_contract"][
             "supervised_targets"
         ],
+        "real_compatible_supervised": REAL_COMPATIBLE_SUPERVISED_TARGETS,
         "latent_synthetic_provenance": metadata[
             "multiclass_target_contract"
         ]["latent_synthetic_provenance"],
@@ -229,6 +293,17 @@ def build_sample_morphology(
             "individual_filament_signal",
             "bundle_signal",
             "clump_signal",
+            "total_clean_signal",
+            "total_optical_signal",
+            "core_signal",
+            "halo_signal",
+            "in_focus_signal",
+            "out_of_focus_signal",
+            "endpoint_map",
+            "projected_crossing_map",
+            "crossing_map",
+            "junction_map",
+            "near_coplanar_crossing_map",
             "visible_instance_membership_y",
             "visible_instance_membership_x",
             "visible_instance_membership_id",
@@ -237,6 +312,16 @@ def build_sample_morphology(
             "contributing_membership_instance_id",
         ],
     }
+    metadata["target_available"].update(
+        {name: True for name in REAL_COMPATIBLE_SUPERVISED_TARGETS}
+    )
+    metadata["target_available"].update(
+        {
+            "individual_filament_source_support_mask": True,
+            "bundle_source_support_mask": True,
+            "clump_source_support_mask": True,
+        }
+    )
     metadata["enum_mappings"].update(
         {
             "trace_termination_status": TRACE_TERMINATION_STATUS_CODES,
@@ -426,36 +511,130 @@ def metadata_for_sample_3d(
     }
 
 
-def save_dataset(config: dict[str, Any], out_dir: Path) -> None:
+def save_dataset(
+    config: dict[str, Any],
+    out_dir: Path,
+    num_workers: int = 1,
+    skip_existing: bool = False,
+    overwrite: bool = False,
+    sample_count_override: int | None = None,
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    count = int(config.get("sample_count", 8))
+    if skip_existing and overwrite:
+        raise ValueError("--skip-existing and --overwrite are mutually exclusive")
+    count = int(sample_count_override if sample_count_override is not None else config.get("sample_count", 8))
     mode = generator_mode(config)
-    limit = 32 if mode == "morphology_scene_3d" else 16
-    if not (8 <= count <= limit):
-        raise ValueError(
-            f"{mode} sample_count must be between 8 and {limit}"
-        )
-    rows: list[dict[str, str]] = []
+    if count < 1:
+        raise ValueError(f"{mode} sample_count must be at least 1")
+    if num_workers < 1:
+        raise ValueError("num_workers must be at least 1")
+    config = dict(config)
+    config["sample_count"] = count
+    indexed_rows: dict[int, dict[str, str]] = {}
+    pending: list[int] = []
     for index in range(count):
-        sample_id, arrays, metadata = build_sample(config, index)
-        npz_path = out_dir / f"{sample_id}.npz"
-        json_path = out_dir / f"{sample_id}.json"
-        assert_no_object_arrays(arrays)
-        np.savez_compressed(npz_path, **arrays)
-        metadata["integrity_checksum"] = {"npz_sha256": sha256_file(npz_path)}
-        json_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        rows.append(
-            {
-                "sample_id": sample_id,
-                "npz_path": npz_path.name,
-                "npz_sha256": sha256_file(npz_path),
-                "json_path": json_path.name,
-                "json_sha256": sha256_file(json_path),
-                "schema_version": metadata["dataset_schema_version"],
-                "generator_version": metadata["generator_version"],
-            }
-        )
+        sample_id = expected_sample_id(config, index)
+        existing = existing_sample_row(out_dir, sample_id)
+        if existing is not None:
+            if overwrite:
+                pending.append(index)
+            elif skip_existing:
+                indexed_rows[index] = existing
+            else:
+                raise FileExistsError(f"{sample_id}: output exists; use --skip-existing or --overwrite")
+        elif sample_outputs_exist(out_dir, sample_id):
+            if overwrite:
+                pending.append(index)
+            else:
+                raise FileExistsError(f"{sample_id}: partial or unreadable output exists; use --overwrite")
+        else:
+            pending.append(index)
+    print(f"synthetic generation: total={count} skipped={len(indexed_rows)} pending={len(pending)} workers={num_workers}")
+    if num_workers == 1:
+        for done, index in enumerate(pending, start=1):
+            indexed_rows[index] = write_synthetic_sample(config, out_dir, index)
+            print(f"completed {done}/{len(pending)} sample_index={index}")
+    else:
+        set_worker_thread_limits()
+        with ProcessPoolExecutor(max_workers=num_workers, initializer=set_worker_thread_limits) as pool:
+            futures = {pool.submit(write_synthetic_sample, config, out_dir, index): index for index in pending}
+            for done, future in enumerate(as_completed(futures), start=1):
+                index = futures[future]
+                try:
+                    indexed_rows[index] = future.result()
+                except Exception as exc:
+                    raise RuntimeError(f"sample_index={index} failed") from exc
+                print(f"completed {done}/{len(pending)} sample_index={index}")
+    rows = [indexed_rows[index] for index in range(count)]
     write_dataset_manifest(out_dir / "dataset_manifest.csv", rows)
+
+
+def expected_sample_id(config: dict[str, Any], sample_index: int) -> str:
+    return f"{config.get('dataset_name', 'synthetic_sted')}_{sample_index:04d}"
+
+
+def sample_outputs_exist(out_dir: Path, sample_id: str) -> bool:
+    return (out_dir / f"{sample_id}.npz").exists() or (out_dir / f"{sample_id}.json").exists()
+
+
+def existing_sample_row(out_dir: Path, sample_id: str) -> dict[str, str] | None:
+    npz_path = out_dir / f"{sample_id}.npz"
+    json_path = out_dir / f"{sample_id}.json"
+    if not npz_path.exists() and not json_path.exists():
+        return None
+    if not npz_path.exists() or not json_path.exists():
+        return None
+    try:
+        with np.load(npz_path, allow_pickle=False) as data:
+            _ = data.files
+        metadata = json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if metadata.get("sample_id") != sample_id:
+        return None
+    return manifest_row(sample_id, npz_path, json_path, metadata)
+
+
+def write_synthetic_sample(config: dict[str, Any], out_dir: Path, index: int) -> dict[str, str]:
+    sample_id, arrays, metadata = build_sample(config, index)
+    return write_sample_atomic(out_dir, sample_id, arrays, metadata)
+
+
+def write_sample_atomic(
+    out_dir: Path,
+    sample_id: str,
+    arrays: dict[str, np.ndarray],
+    metadata: dict[str, Any],
+) -> dict[str, str]:
+    npz_path = out_dir / f"{sample_id}.npz"
+    json_path = out_dir / f"{sample_id}.json"
+    tmp_npz = out_dir / f"{sample_id}.npz.tmp.{os.getpid()}"
+    tmp_json = out_dir / f"{sample_id}.json.tmp.{os.getpid()}"
+    try:
+        assert_no_object_arrays(arrays)
+        with tmp_npz.open("wb") as f:
+            np.savez_compressed(f, **arrays)
+        metadata["integrity_checksum"] = {"npz_sha256": sha256_file(tmp_npz)}
+        tmp_json.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp_npz, npz_path)
+        os.replace(tmp_json, json_path)
+        return manifest_row(sample_id, npz_path, json_path, metadata)
+    except Exception:
+        tmp_npz.unlink(missing_ok=True)
+        tmp_json.unlink(missing_ok=True)
+        raise
+
+
+def manifest_row(sample_id: str, npz_path: Path, json_path: Path, metadata: dict[str, Any]) -> dict[str, str]:
+    return {
+        "sample_id": sample_id,
+        "npz_path": npz_path.name,
+        "npz_sha256": sha256_file(npz_path),
+        "json_path": json_path.name,
+        "json_sha256": sha256_file(json_path),
+        "schema_version": metadata["dataset_schema_version"],
+        "generator_version": metadata["generator_version"],
+    }
 
 
 def assert_no_object_arrays(arrays: dict[str, np.ndarray]) -> None:
@@ -475,42 +654,78 @@ def write_dataset_manifest(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def validate_dataset(out_dir: Path, deterministic: bool = True) -> list[str]:
+def validate_dataset(
+    out_dir: Path, deterministic: bool = True, num_workers: int = 1
+) -> list[str]:
     manifest = out_dir / "dataset_manifest.csv"
     if not manifest.exists():
         return [f"{manifest}: missing dataset manifest"]
     with manifest.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
+    if num_workers < 1:
+        raise ValueError("num_workers must be at least 1")
+    if num_workers > 1:
+        set_worker_thread_limits()
+        errors_by_index: dict[int, list[str]] = {}
+        with ProcessPoolExecutor(
+            max_workers=num_workers, initializer=set_worker_thread_limits
+        ) as pool:
+            futures = {
+                pool.submit(validate_dataset_row, out_dir, row, deterministic): index
+                for index, row in enumerate(rows)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    errors_by_index[index] = future.result()
+                except Exception as exc:
+                    sample_id = rows[index].get("sample_id", f"row_{index}")
+                    errors_by_index[index] = [
+                        f"{sample_id}: validator worker failed: {type(exc).__name__}: {exc}"
+                    ]
+        return [
+            error
+            for index in range(len(rows))
+            for error in errors_by_index.get(index, [])
+        ]
     errors: list[str] = []
     for row in rows:
-        npz_path = out_dir / row["npz_path"]
-        json_path = out_dir / row["json_path"]
-        if sha256_file(npz_path) != row["npz_sha256"]:
-            errors.append(f"{row['sample_id']}: NPZ checksum mismatch")
-        if sha256_file(json_path) != row["json_sha256"]:
-            errors.append(f"{row['sample_id']}: JSON checksum mismatch")
-        metadata = json.loads(json_path.read_text(encoding="utf-8"))
-        with np.load(npz_path, allow_pickle=False) as data:
-            arrays = {name: data[name] for name in data.files}
-        errors.extend(validate_sample_arrays(row["sample_id"], arrays, metadata))
-        is_composite = metadata.get("source_blank_provenance") != "not_applicable"
-        if (
-            deterministic
-            and not is_composite
-            and metadata.get("dataset_schema_version")
-            in {
+        errors.extend(validate_dataset_row(out_dir, row, deterministic))
+    return errors
+
+
+def validate_dataset_row(
+    out_dir: Path, row: dict[str, str], deterministic: bool
+) -> list[str]:
+    errors: list[str] = []
+    npz_path = out_dir / row["npz_path"]
+    json_path = out_dir / row["json_path"]
+    if sha256_file(npz_path) != row["npz_sha256"]:
+        errors.append(f"{row['sample_id']}: NPZ checksum mismatch")
+    if sha256_file(json_path) != row["json_sha256"]:
+        errors.append(f"{row['sample_id']}: JSON checksum mismatch")
+    metadata = json.loads(json_path.read_text(encoding="utf-8"))
+    with np.load(npz_path, allow_pickle=False) as data:
+        arrays = {name: data[name] for name in data.files}
+    errors.extend(validate_sample_arrays(row["sample_id"], arrays, metadata))
+    is_composite = metadata.get("source_blank_provenance") != "not_applicable"
+    if (
+        deterministic
+        and not is_composite
+        and metadata.get("dataset_schema_version")
+        in {
             DATASET_SCHEMA_VERSION_3D,
             DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
-            }
-        ):
-            _, rebuilt, rebuilt_metadata = build_sample(
-                metadata["generation_config"], int(metadata["sample_index"])
+        }
+    ):
+        _, rebuilt, rebuilt_metadata = build_sample(
+            metadata["generation_config"], int(metadata["sample_index"])
+        )
+        errors.extend(
+            compare_complete_artifact(
+                row["sample_id"], arrays, metadata, rebuilt, rebuilt_metadata
             )
-            errors.extend(
-                compare_complete_artifact(
-                    row["sample_id"], arrays, metadata, rebuilt, rebuilt_metadata
-                )
-            )
+        )
     return errors
 
 
@@ -596,6 +811,12 @@ def validate_sample_arrays(sample_id: str, arrays: dict[str, np.ndarray], metada
     ):
         errors.append(f"{sample_id}: invalid morphology generator version")
     if (
+        schema_version == DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7
+        and metadata.get("generator_version")
+        != GENERATOR_VERSION_3D_MORPHOLOGY_0_7
+    ):
+        errors.append(f"{sample_id}: invalid schema 0.7 morphology generator version")
+    if (
         schema_version == DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY
         and metadata.get("generator_version")
         != GENERATOR_VERSION_3D_MORPHOLOGY_LEGACY
@@ -636,6 +857,7 @@ def validate_sample_arrays(sample_id: str, arrays: dict[str, np.ndarray], metada
         DATASET_SCHEMA_VERSION_3D_NORMALIZED,
         DATASET_SCHEMA_VERSION_3D_LEGACY,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }:
         errors.extend(validate_3d_arrays(sample_id, arrays, metadata))
@@ -650,21 +872,25 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
         DATASET_SCHEMA_VERSION_3D_HARDENED,
         DATASET_SCHEMA_VERSION_3D_NORMALIZED,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }
     is_hardened_schema = schema_version in {
         DATASET_SCHEMA_VERSION_3D,
         DATASET_SCHEMA_VERSION_3D_HARDENED,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }
     is_morphology_schema = schema_version in {
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7,
         DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     }
-    is_corrected_morphology_schema = (
-        schema_version == DATASET_SCHEMA_VERSION_3D_MORPHOLOGY
-    )
+    is_corrected_morphology_schema = schema_version in {
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7,
+        DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
+    }
     if arrays["fiber_points_xyz"].shape[1] != 3:
         errors.append(f"{sample_id}: fiber_points_xyz must have xyz columns")
     if arrays["fiber_points_xy"].shape[0] != arrays["fiber_points_xyz"].shape[0]:
@@ -719,8 +945,12 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
         expected_semantic = arrays[semantic_source].astype(np.uint8)
     if not np.array_equal(arrays["semantic_mask"], expected_semantic):
         errors.append(f"{sample_id}: semantic_mask source mismatch")
-    mask = arrays["total_clean_signal"] > 0
-    if np.any(arrays["nearest_depth_map"][mask] < 0) or np.any(arrays["weighted_mean_depth_map"][mask] < 0):
+    mask = (
+        arrays["contributing_overlap_count"] > 0
+        if "contributing_overlap_count" in arrays
+        else arrays["total_clean_signal"] > 0
+    )
+    if np.any(arrays["nearest_depth_map"][mask] <= -0.5) or np.any(arrays["weighted_mean_depth_map"][mask] <= -0.5):
         errors.append(f"{sample_id}: depth maps missing for contributing pixels")
     fwhm = metadata["width_calibration"]["measured_fwhm_px"]
     lo = metadata["width_calibration"]["min_allowed_fwhm_px"]
@@ -819,7 +1049,12 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
             if "source_float" in arrays:
                 errors.append(f"{sample_id}: source_float is obsolete for 0.4.0; use line_source_float and geometric_support_preview")
             source_integral = float(np.sum(arrays["line_source_float"]))
-            emitted = float(metadata["rendering_report"]["total_emitted_source_signal"])
+            emitted = float(
+                metadata["rendering_report"].get(
+                    "line_source_integrated_signal",
+                    metadata["rendering_report"]["total_emitted_source_signal"],
+                )
+            )
             if not np.isclose(source_integral, emitted, rtol=1e-5, atol=1e-3):
                 errors.append(f"{sample_id}: line_source_float integral {source_integral:.6g} does not match emitted signal {emitted:.6g}")
             visible_expected = np.zeros_like(arrays["visible_overlap_count"], dtype=np.uint16)
@@ -836,7 +1071,12 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
             retained = metadata["rendering_report"].get("kernel_in_frame_retained_sum", {})
             if isinstance(retained, dict) and float(retained.get("max", 0.0)) > 1.000001:
                 errors.append(f"{sample_id}: retained kernel sum cannot exceed one")
-            if metadata["rendering_report"].get("scenario_category") not in {"structural_qa", "optical_qa", "realism_calibration"}:
+            if metadata["rendering_report"].get("scenario_category") not in {
+                "structural_qa",
+                "optical_qa",
+                "realism_calibration",
+                "clump_ignore_stress",
+            }:
                 errors.append(f"{sample_id}: invalid scenario_category")
             expected_optional = {
                 "orientation": {
@@ -873,6 +1113,7 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
         if schema_version in {
             DATASET_SCHEMA_VERSION_3D,
             DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
+            DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7,
             DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
         }:
             report = metadata["rendering_report"]
@@ -1040,7 +1281,128 @@ def validate_morphology_arrays(
                 sample_id, arrays, metadata
             )
         )
+        has_real_compatible_view = any(
+            name in arrays for name in REAL_COMPATIBLE_SUPERVISED_TARGETS
+        ) or bool(
+            metadata.get("target_roles", {}).get(
+                "real_compatible_supervised"
+            )
+        )
+        if has_real_compatible_view:
+            errors.extend(
+                validate_real_compatible_targets(sample_id, arrays, metadata)
+            )
+    if metadata.get("dataset_schema_version") == DATASET_SCHEMA_VERSION_3D_MORPHOLOGY:
+        errors.extend(validate_schema08_apparent_masks(sample_id, arrays, metadata))
     return errors
+
+
+def validate_schema08_apparent_masks(
+    sample_id: str,
+    arrays: dict[str, np.ndarray],
+    metadata: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    for name in [
+        "individual_filament_source_support_mask",
+        "bundle_source_support_mask",
+        "clump_source_support_mask",
+    ]:
+        if name not in arrays:
+            errors.append(f"{sample_id}: missing source-support mask {name}")
+    roles = metadata.get("target_roles", {})
+    role_names = [
+        "supervised",
+        "latent_synthetic_provenance",
+        "diagnostic_only",
+        "real_compatible_supervised",
+    ]
+    role_sets = {name: set(roles.get(name, [])) for name in role_names}
+    for i, left in enumerate(role_names):
+        for right in role_names[i + 1 :]:
+            overlap = role_sets[left] & role_sets[right]
+            if overlap:
+                errors.append(
+                    f"{sample_id}: target role lists overlap for {left}/{right}: {sorted(overlap)}"
+                )
+    supervised = role_sets["supervised"]
+    latent = role_sets["latent_synthetic_provenance"]
+    for name in [
+        "individual_filament_source_support_mask",
+        "bundle_source_support_mask",
+        "clump_source_support_mask",
+    ]:
+        if name in supervised or name not in latent:
+            errors.append(f"{sample_id}: {name} must be latent, not supervised")
+
+    report = metadata.get("rendering_report", {})
+    rule = report.get("apparent_mask_rule", {})
+    visible = float(report["visible_signal_threshold"])
+    low = visible * float(rule.get("low_factor", 0.75))
+    high = visible * float(rule.get("high_factor", 1.0))
+    max_distance = float(rule.get("max_source_distance_px", 4.0))
+    expected = expected_apparent_semantic(arrays, low, high, max_distance)
+    if not np.array_equal(arrays["semantic_class_mask"], expected):
+        errors.append(f"{sample_id}: apparent semantic mask does not match threshold rule")
+    if not np.array_equal(
+        arrays["semantic_mask"], np.isin(expected, [1, 2, 3]).astype(np.uint8)
+    ):
+        errors.append(f"{sample_id}: semantic_mask must exclude uncertain_ignore")
+    return errors
+
+
+def expected_apparent_semantic(
+    arrays: dict[str, np.ndarray],
+    low_threshold: float,
+    high_threshold: float,
+    max_distance: float,
+) -> np.ndarray:
+    def region(mask: np.ndarray) -> np.ndarray:
+        if not np.any(mask):
+            return mask.astype(bool)
+        try:
+            from scipy import ndimage
+        except Exception:
+            return mask.astype(bool)
+        return ndimage.distance_transform_edt(~mask.astype(bool)) <= max_distance
+
+    sources = {
+        "individual_filament": arrays["individual_filament_source_support_mask"].astype(bool),
+        "bundle": arrays["bundle_source_support_mask"].astype(bool),
+        "clump": arrays["clump_source_support_mask"].astype(bool),
+    }
+    signals = {
+        "individual_filament": arrays["individual_filament_signal"],
+        "bundle": arrays["bundle_signal"],
+        "clump": arrays["clump_signal"],
+    }
+    high = {
+        name: (signals[name] >= high_threshold) & region(mask)
+        for name, mask in sources.items()
+    }
+    low = {
+        name: (signals[name] >= low_threshold)
+        & (signals[name] < high_threshold)
+        & region(mask)
+        for name, mask in sources.items()
+    }
+    semantic = np.zeros_like(arrays["semantic_class_mask"], dtype=np.uint8)
+    semantic[high["individual_filament"]] = 1
+    semantic[high["bundle"]] = 2
+    semantic[high["clump"]] = 3
+    uncertain = (low["individual_filament"] | low["bundle"] | low["clump"]) & (semantic == 0)
+    source_union = (
+        arrays["individual_filament_source_support_mask"].astype(bool)
+        | arrays["bundle_source_support_mask"].astype(bool)
+        | arrays["clump_source_support_mask"].astype(bool)
+    )
+    transition = (
+        arrays.get("bundle_transition_mask", 0)
+        | arrays.get("clump_transition_mask", 0)
+    ) & source_union
+    uncertain |= np.asarray(transition).astype(bool)
+    semantic[uncertain] = 255
+    return semantic
 
 
 def validate_corrected_morphology_semantics(
@@ -1214,28 +1576,29 @@ def validate_corrected_morphology_semantics(
         errors.append(
             f"{sample_id}: latent bundle/clump edge marked supervised"
         )
-    expected_endpoint = np.zeros_like(arrays["endpoint_map"], dtype=np.uint8)
-    radius = float(
-        metadata.get("generation_config", {})
-        .get("targets", {})
-        .get("endpoint_radius_px", 3.0)
-    )
-    offsets = arrays["trace_point_offsets"]
-    for index, (start_status, end_status) in enumerate(
-        zip(arrays["trace_start_status"], arrays["trace_end_status"])
-    ):
-        start, end = int(offsets[index]), int(offsets[index + 1])
-        if end <= start:
-            continue
-        if int(start_status) == valid:
-            draw_disk(expected_endpoint, arrays["trace_points_xy"][start], radius)
-        if int(end_status) == valid:
-            draw_disk(expected_endpoint, arrays["trace_points_xy"][end - 1], radius)
-    expected_endpoint &= arrays["individual_filament_mask"]
-    if not np.array_equal(expected_endpoint, arrays["endpoint_map"]):
-        errors.append(
-            f"{sample_id}: endpoint map contains non-valid or missing endpoints"
+    if metadata.get("dataset_schema_version") != DATASET_SCHEMA_VERSION_3D_MORPHOLOGY:
+        expected_endpoint = np.zeros_like(arrays["endpoint_map"], dtype=np.uint8)
+        radius = float(
+            metadata.get("generation_config", {})
+            .get("targets", {})
+            .get("endpoint_radius_px", 3.0)
         )
+        offsets = arrays["trace_point_offsets"]
+        for index, (start_status, end_status) in enumerate(
+            zip(arrays["trace_start_status"], arrays["trace_end_status"])
+        ):
+            start, end = int(offsets[index]), int(offsets[index + 1])
+            if end <= start:
+                continue
+            if int(start_status) == valid:
+                draw_disk(expected_endpoint, arrays["trace_points_xy"][start], radius)
+            if int(end_status) == valid:
+                draw_disk(expected_endpoint, arrays["trace_points_xy"][end - 1], radius)
+        expected_endpoint &= arrays["individual_filament_mask"]
+        if not np.array_equal(expected_endpoint, arrays["endpoint_map"]):
+            errors.append(
+                f"{sample_id}: endpoint map contains non-valid or missing endpoints"
+            )
     if not np.allclose(
         arrays["individual_filament_signal"]
         + arrays["bundle_signal"]
@@ -1246,13 +1609,15 @@ def validate_corrected_morphology_semantics(
         errors.append(
             f"{sample_id}: class-attributed signals do not reconstruct total signal"
         )
-    errors.extend(validate_signal_alignment(sample_id, metadata))
+    errors.extend(validate_signal_alignment(sample_id, metadata, arrays))
     errors.extend(validate_compact_class_geometry(sample_id, arrays, metadata))
     return errors
 
 
 def validate_signal_alignment(
-    sample_id: str, metadata: dict[str, Any]
+    sample_id: str,
+    metadata: dict[str, Any],
+    arrays: dict[str, np.ndarray] | None = None,
 ) -> list[str]:
     errors = []
     report = metadata.get("rendering_report", {}).get(
@@ -1276,18 +1641,53 @@ def validate_signal_alignment(
             errors.append(
                 f"{sample_id}: {class_name} mask has insufficient rendered signal"
             )
-        if (
-            float(
-                metrics[
-                    "fraction_of_visible_class_signal_outside_class_mask"
-                ]
+        outside = unsupported_visible_signal_fraction(class_name, arrays, metadata)
+        if outside is None:
+            outside = float(
+                metrics["fraction_of_visible_class_signal_outside_class_mask"]
             )
-            > max_outside
-        ):
+        if outside > max_outside:
             errors.append(
                 f"{sample_id}: {class_name} signal spill exceeds acceptance limit"
             )
     return errors
+
+
+def unsupported_visible_signal_fraction(
+    class_name: str,
+    arrays: dict[str, np.ndarray] | None,
+    metadata: dict[str, Any],
+) -> float | None:
+    if arrays is None:
+        return None
+    signal_name = f"{class_name}_signal"
+    mask_name = f"{class_name}_mask"
+    required = [
+        signal_name,
+        mask_name,
+        "individual_filament_mask",
+        "bundle_mask",
+        "clump_mask",
+        "uncertain_ignore_mask",
+    ]
+    if not all(name in arrays for name in required):
+        return None
+    signal = arrays[signal_name]
+    threshold = float(
+        metadata.get("rendering_report", {}).get("visible_signal_threshold", 3.0)
+    )
+    visible = signal > threshold
+    visible_energy = float(signal[visible].sum())
+    if visible_energy <= 0:
+        return 0.0
+    compatible = (
+        arrays["individual_filament_mask"].astype(bool)
+        | arrays["bundle_mask"].astype(bool)
+        | arrays["clump_mask"].astype(bool)
+        | arrays["uncertain_ignore_mask"].astype(bool)
+    )
+    outside_energy = float(signal[visible & ~compatible].sum())
+    return outside_energy / visible_energy
 
 
 def validate_compact_class_geometry(
@@ -1316,7 +1716,8 @@ def validate_compact_class_geometry(
                 metadata["width_calibration"]["min_allowed_fwhm_px"],
             )
         )
-        if width <= min_width:
+        tolerance = float(config.get("bundle_width_tolerance_px", 0.05))
+        if width + tolerance <= min_width:
             errors.append(
                 f"{sample_id}: unresolved bundle width {width:.3f} "
                 f"does not exceed filament width {min_width:.3f}"
@@ -1333,6 +1734,8 @@ def validate_compact_class_geometry(
                 f"{sample_id}: clump dark-hole fraction {dark_fraction:.3f} "
                 "exceeds acceptance limit"
             )
+        if metadata.get("dataset_schema_version") == DATASET_SCHEMA_VERSION_3D_MORPHOLOGY:
+            return errors
         for clump_id in arrays["clump_ids"]:
             y = arrays["clump_membership_y"][
                 arrays["clump_membership_instance_id"] == clump_id
@@ -1356,9 +1759,9 @@ def validate_compact_class_geometry(
                     f"{component_count} disconnected components"
                 )
             filled = ndimage.binary_fill_holes(local)
-            solidity = float(local.sum() / max(int(filled.sum()), 1))
-            if solidity < float(config.get("min_clump_solidity", 0.2)):
+            hole_fill_ratio = float(local.sum() / max(int(filled.sum()), 1))
+            if hole_fill_ratio < float(config.get("min_clump_hole_fill_ratio", 0.2)):
                 errors.append(
-                    f"{sample_id}: clump {int(clump_id)} solidity too low"
+                    f"{sample_id}: clump {int(clump_id)} hole-fill ratio too low"
                 )
     return errors

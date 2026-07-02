@@ -15,8 +15,9 @@ from fibras.synthetic.collection import validate_dataset_collection
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset_dirs", nargs="+", type=Path)
+    parser.add_argument("--num-workers", type=int, default=1)
     args = parser.parse_args()
-    errors = validate_dataset_collection(args.dataset_dirs)
+    errors = validate_dataset_collection(args.dataset_dirs, num_workers=args.num_workers)
     if errors:
         print("Synthetic dataset collection validation failed:", file=sys.stderr)
         for error in errors:

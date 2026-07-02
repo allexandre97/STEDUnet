@@ -1,5 +1,7 @@
+examples/
+
 # ----------------------------------------------------------------------
-# Local environments and caches
+# Python environments, caches, and local tooling
 # ----------------------------------------------------------------------
 __pycache__/
 *.py[cod]
@@ -14,23 +16,66 @@ env/
 .DS_Store
 
 # ----------------------------------------------------------------------
-# Local configuration and source data
+# Secrets, credentials, and machine-local configuration
 # ----------------------------------------------------------------------
-configs/synthetic_sted/source_roots.yaml
 .env
+.env.*
+!.env.example
 *.local.yaml
+configs/synthetic_sted/source_roots.yaml
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+*_credentials.json
+*secret*.json
+*token*.json
 
-# Raw microscopy data should remain outside Git
+# ----------------------------------------------------------------------
+# Experiment outputs, W&B state, and model checkpoints
+# ----------------------------------------------------------------------
+runs/
+checkpoints/
+wandb/
+**/wandb/
+.wandb/
+.wandb*/
+**/.wandb/
+**/.wandb*/
+wandb-artifacts/
+tea_debug.log
+*.log
+*.ckpt
+*.pth
+*.pt
+
+# ----------------------------------------------------------------------
+# Raw microscopy data and private real annotations
+# ----------------------------------------------------------------------
 data/raw/
 data/sted/
 *.tif
 *.tiff
+manual_annotations/
+real_annotations/
+private_annotations/
+expert_annotations/
+*.labeling
+PN*_DIV*Series*.txt
+reports/real_annotation_pilot_check/
+reports/real_pilot_baseline_eval/
+reports/real_annotation_batch_eval/
+runs/*real_pilot*
+runs/*real_annotation_batch*
+real_pilot_eval/
+real_annotation_batch_eval/
 
 # ----------------------------------------------------------------------
-# Generated synthetic datasets and binary artifacts
+# Generated synthetic datasets and binary arrays
 # ----------------------------------------------------------------------
 calibration_artifacts/
-
 examples/synthetic_sted_3d_normalized/
 examples/sted_blank_composites_3d_normalized/
 examples/pure_blank_qa/
@@ -40,22 +85,23 @@ examples/synthetic_sted_3d_realism/
 examples/sted_blank_composites_3d_realism/
 examples/synthetic_sted_morphology_review/
 examples/sted_blank_composites_morphology_review/
-examples/sted_blank_composites_3d_normalized/
-examples/synthetic_sted_3d_normalized/
-
-# Generic generated numerical and microscopy artifacts
+examples/synthetic_sted_training_candidate_schema08/
+examples/sted_blank_composites_training_candidate_schema08/
+examples/synthetic_sted_training_v0_schema08/
+examples/sted_blank_composites_training_v0_schema08/
+examples/synthetic_sted_clump_ignore_stress_schema08/
+examples/sted_blank_composites_clump_ignore_stress_schema08/
+examples/sted_blank_composites_exploratory/
+examples/synthetic_sted_rendered/
 *.npz
 *.npy
 *.h5
 *.hdf5
 *.zarr/
-*.ckpt
-*.pth
-*.pt
 
 # ----------------------------------------------------------------------
 # Large generated report assets
-# Markdown reports remain trackable
+# Markdown reports remain trackable.
 # ----------------------------------------------------------------------
 reports/sted_appearance_calibration_assets/
 reports/synthetic_3d_normalized_visuals/
@@ -68,6 +114,10 @@ reports/sted_blank_composite_3d_realism_visuals/
 reports/synthetic_mvp_visuals/
 reports/synthetic_morphology_review/full_samples/
 reports/synthetic_morphology_semantic_review/full_samples/
+reports/synthetic_training_candidate_schema08/
+reports/synthetic_clump_ignore_stress_schema08/
+reports/first_baseline*/
+reports/*prediction*/
 reports/review_package/*
 !reports/review_package/README.md
 !reports/review_package/*.png
@@ -82,20 +132,3 @@ reports/review_package/*
 *.7z
 tmp/
 temp/
-
-# Large generated examples retained locally, not in Git
-examples/sted_blank_composites_exploratory/
-examples/synthetic_sted_rendered/
-examples/synthetic_sted_3d_normalized/
-examples/sted_blank_composites_3d_normalized/
-examples/pure_blank_qa/
-examples/synthetic_sted_3d_realism/
-examples/sted_blank_composites_3d_realism/
-
-# Generated calibration data and large binary arrays
-calibration_artifacts/
-*.npz
-*.npy
-*.h5
-*.hdf5
-*.zarr/

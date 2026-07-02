@@ -1,0 +1,63 @@
+{
+  "clump_region_intensity_mean_percentiles": {
+    "p50": 39.6515625,
+    "p95": 118.29578124999998,
+    "p99": 142.828703125
+  },
+  "dataset_dir": "examples/sted_blank_composites_training_v1b_schema08",
+  "full_image_intensity_mean_percentiles": {
+    "p50": 3.3109375,
+    "p95": 18.09375,
+    "p99": 63.09140625
+  },
+  "ignore_region_intensity_mean_percentiles": {
+    "p50": 13.515625,
+    "p95": 65.68117187499998,
+    "p99": 113.77021875
+  },
+  "largest_clump_component_fraction": {
+    "max": 0.1293802261352539,
+    "p50": 0.0013093948364257812,
+    "p95": 0.049571418762206956
+  },
+  "largest_clump_gt_10_fraction": 0.0015625,
+  "largest_clump_gt_5_fraction": 0.05,
+  "max_leakage": {
+    "fibrous_tau_pixels_inside_clump": 0,
+    "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+    "skeleton_pixels_inside_clump": 0,
+    "skeleton_pixels_inside_uncertain_ignore": 0
+  },
+  "max_patch_clump_fraction_distribution": {
+    "max": 0.99755859375,
+    "p50": 0.080169677734375,
+    "p95": 0.8728088378906249
+  },
+  "max_patch_clump_fraction_mean": 0.21248750686645507,
+  "normal_fraction": 0.75,
+  "panel_paths": [
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0000_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0003_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0007_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0475_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0011_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0395_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0459_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0219_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0115_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0615_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0267_clump_ignore_qa.png",
+    "reports/synthetic_training_v1b_schema08/panels/sted_blank_composites_training_v1b_schema08_0587_clump_ignore_qa.png"
+  ],
+  "patch_fraction_clump_gt_25_mean": 0.019140625,
+  "patch_fraction_clump_gt_50_mean": 0.008447265625,
+  "sample_count": 640,
+  "sample_variant_counts": {
+    "normal": 640
+  },
+  "scenario_category_counts": {
+    "clump_ignore_stress": 160,
+    "realism_calibration": 480
+  },
+  "stress_fraction": 0.25
+}

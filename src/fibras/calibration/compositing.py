@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,15 @@ from fibras.synthetic.schema import (
     REAL_SEMANTIC_CLASSES,
     TRACE_TERMINATION_STATUSES,
 )
-from fibras.synthetic.storage import assert_no_object_arrays, sha256_file, write_dataset_manifest
+from fibras.synthetic.storage import (
+    assert_no_object_arrays,
+    existing_sample_row,
+    sample_outputs_exist,
+    set_worker_thread_limits,
+    sha256_file,
+    write_dataset_manifest,
+    write_sample_atomic,
+)
 from fibras.synthetic.targets import rasterize_targets
 
 from .schema import CALIBRATION_DATA_STATUSES, CALIBRATION_SCHEMA_VERSION, artifact_metadata
@@ -54,55 +63,126 @@ def select_blank_rows(inventory_dir: Path, splits_path: Path, split: str, count:
     return selected[:count]
 
 
-def select_blank_pool_rows(inventory_dir: Path, pool_path: Path, role: str, count: int) -> list[dict[str, str]]:
+def repeat_to_count(rows: list[dict[str, str]], count: int) -> list[dict[str, str]]:
+    return [rows[i % len(rows)] for i in range(count)]
+
+
+def select_blank_pool_rows(
+    inventory_dir: Path,
+    pool_path: Path,
+    role: str,
+    count: int,
+    allow_reuse: bool = False,
+) -> list[dict[str, str]]:
     blanks = build_blank_lookup(inventory_dir)
     rows = [r for r in read_csv(pool_path) if r.get("blank_pool_role") == role]
     selected = [blanks[r["stable_image_id"]] for r in sorted(rows, key=lambda r: r["stable_image_id"]) if r["stable_image_id"] in blanks]
+    if allow_reuse and selected:
+        return repeat_to_count(selected, count)
     if len(selected) < count:
         raise ValueError(f"not enough blank images for role {role}: need {count}, found {len(selected)}")
     return selected[:count]
 
 
-def generate_composites(config: dict[str, Any], inventory_dir: Path, splits_path: Path, out_dir: Path) -> None:
+def generate_composites(
+    config: dict[str, Any],
+    inventory_dir: Path,
+    splits_path: Path,
+    out_dir: Path,
+    num_workers: int = 1,
+    skip_existing: bool = False,
+    overwrite: bool = False,
+    sample_count_override: int | None = None,
+) -> None:
     status = config.get("calibration_data_status", "exploratory_unpartitioned")
     if status not in CALIBRATION_DATA_STATUSES or not status.startswith("exploratory"):
         raise ValueError("this exploratory compositor requires exploratory calibration_data_status")
-    sample_count = int(config.get("compositing", {}).get("sample_count", 8))
-    max_count = (
-        32 if config.get("generator_mode") == "morphology_scene_3d" else 16
-    )
-    if not (8 <= sample_count <= max_count):
-        raise ValueError(f"sample_count must be 8-{max_count} for bounded output")
+    if skip_existing and overwrite:
+        raise ValueError("--skip-existing and --overwrite are mutually exclusive")
+    if num_workers < 1:
+        raise ValueError("num_workers must be at least 1")
+    sample_count = int(sample_count_override if sample_count_override is not None else config.get("compositing", {}).get("sample_count", 8))
+    if sample_count < 1:
+        raise ValueError("sample_count must be at least 1")
+    config = dict(config)
+    config["compositing"] = dict(config.get("compositing", {}))
+    config["compositing"]["sample_count"] = sample_count
     split = config.get("compositing", {}).get("synthetic_split", "calibration")
     blank_pool_role = config.get("compositing", {}).get("blank_pool_role", split)
     source_roots = config["source_roots"]
     pool_manifest = config.get("compositing", {}).get("blank_pool_manifest")
     if pool_manifest:
-        blank_rows = select_blank_pool_rows(inventory_dir, Path(pool_manifest), blank_pool_role, sample_count)
+        blank_rows = select_blank_pool_rows(
+            inventory_dir,
+            Path(pool_manifest),
+            blank_pool_role,
+            sample_count,
+            bool(config.get("compositing", {}).get("allow_blank_reuse_within_pool", False)),
+        )
     else:
         blank_rows = select_blank_rows(inventory_dir, splits_path, split, sample_count)
     out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_rows: list[dict[str, str]] = []
-    for index, blank_row in enumerate(blank_rows):
-        sample_id, arrays, metadata = build_composite_sample(config, blank_row, source_roots, index, inventory_dir, splits_path)
-        npz_path = out_dir / f"{sample_id}.npz"
-        json_path = out_dir / f"{sample_id}.json"
-        assert_no_object_arrays(arrays)
-        np.savez_compressed(npz_path, **arrays)
-        metadata["integrity_checksum"] = {"npz_sha256": sha256_file(npz_path)}
-        json_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        manifest_rows.append(
-            {
-                "sample_id": sample_id,
-                "npz_path": npz_path.name,
-                "npz_sha256": sha256_file(npz_path),
-                "json_path": json_path.name,
-                "json_sha256": sha256_file(json_path),
-                "schema_version": metadata["dataset_schema_version"],
-                "generator_version": metadata["generator_version"],
+    indexed_rows: dict[int, dict[str, str]] = {}
+    pending: list[int] = []
+    for index in range(sample_count):
+        sample_id = expected_composite_sample_id(config, index)
+        existing = existing_sample_row(out_dir, sample_id)
+        if existing is not None:
+            if overwrite:
+                pending.append(index)
+            elif skip_existing:
+                indexed_rows[index] = existing
+            else:
+                raise FileExistsError(f"{sample_id}: output exists; use --skip-existing or --overwrite")
+        elif sample_outputs_exist(out_dir, sample_id):
+            if overwrite:
+                pending.append(index)
+            else:
+                raise FileExistsError(f"{sample_id}: partial or unreadable output exists; use --overwrite")
+        else:
+            pending.append(index)
+    print(f"blank-composite generation: total={sample_count} skipped={len(indexed_rows)} pending={len(pending)} workers={num_workers}")
+    if num_workers == 1:
+        for done, index in enumerate(pending, start=1):
+            indexed_rows[index] = write_composite_sample(config, blank_rows[index], source_roots, index, inventory_dir, splits_path, out_dir)
+            print(f"completed {done}/{len(pending)} sample_index={index}")
+    else:
+        set_worker_thread_limits()
+        with ProcessPoolExecutor(max_workers=num_workers, initializer=set_worker_thread_limits) as pool:
+            futures = {
+                pool.submit(write_composite_sample, config, blank_rows[index], source_roots, index, inventory_dir, splits_path, out_dir): index
+                for index in pending
             }
-        )
+            for done, future in enumerate(as_completed(futures), start=1):
+                index = futures[future]
+                try:
+                    indexed_rows[index] = future.result()
+                except Exception as exc:
+                    raise RuntimeError(f"sample_index={index} failed") from exc
+                print(f"completed {done}/{len(pending)} sample_index={index}")
+    manifest_rows = [indexed_rows[index] for index in range(sample_count)]
     write_dataset_manifest(out_dir / "dataset_manifest.csv", manifest_rows)
+
+
+def expected_composite_sample_id(config: dict[str, Any], sample_index: int) -> str:
+    if config.get("generator_mode") in {"persistent_chain_3d", "morphology_scene_3d"}:
+        base = config.get("compositing", {}).get("composite_dataset_name", config.get("dataset_name", "sted_blank_composite"))
+    else:
+        base = config.get("dataset_name", "sted_blank_composite")
+    return f"{base}_{sample_index:04d}"
+
+
+def write_composite_sample(
+    config: dict[str, Any],
+    blank_row: dict[str, str],
+    source_roots: dict[str, str],
+    sample_index: int,
+    inventory_dir: Path,
+    splits_path: Path,
+    out_dir: Path,
+) -> dict[str, str]:
+    sample_id, arrays, metadata = build_composite_sample(config, blank_row, source_roots, sample_index, inventory_dir, splits_path)
+    return write_sample_atomic(out_dir, sample_id, arrays, metadata)
 
 
 def load_parent_synthetic(config: dict[str, Any], sample_index: int) -> tuple[dict[str, np.ndarray], dict[str, Any], dict[str, str]] | None:

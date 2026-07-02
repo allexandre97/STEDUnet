@@ -21,10 +21,14 @@ DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY = (
 GENERATOR_VERSION_3D_MORPHOLOGY_LEGACY = (
     "fibras_morphology_scene_3d_0.6.0"
 )
-DATASET_SCHEMA_VERSION_3D_MORPHOLOGY = (
+DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7 = (
     "synthetic_sted_3d_morphology_0.7.0"
 )
-GENERATOR_VERSION_3D_MORPHOLOGY = "fibras_morphology_scene_3d_0.7.0"
+GENERATOR_VERSION_3D_MORPHOLOGY_0_7 = "fibras_morphology_scene_3d_0.7.0"
+DATASET_SCHEMA_VERSION_3D_MORPHOLOGY = (
+    "synthetic_sted_3d_morphology_0.8.0"
+)
+GENERATOR_VERSION_3D_MORPHOLOGY = "fibras_morphology_scene_3d_0.8.0"
 
 GENERATOR_MODES = {
     "structural_test_2d",
@@ -231,7 +235,7 @@ REQUIRED_ARRAYS_3D_MORPHOLOGY_LEGACY = REQUIRED_ARRAYS_3D | {
     "trace_end_status",
     "trace_fiber_ids",
 }
-REQUIRED_ARRAYS_3D_MORPHOLOGY = (
+REQUIRED_ARRAYS_3D_MORPHOLOGY_0_7 = (
     REQUIRED_ARRAYS_3D_MORPHOLOGY_LEGACY
     - {
         "membership_y",
@@ -260,6 +264,16 @@ REQUIRED_ARRAYS_3D_MORPHOLOGY = (
     "bundle_signal",
     "clump_signal",
 }
+REQUIRED_ARRAYS_3D_MORPHOLOGY = REQUIRED_ARRAYS_3D_MORPHOLOGY_0_7 | {
+    "individual_filament_source_support_mask",
+    "bundle_source_support_mask",
+    "clump_source_support_mask",
+    "real_compatible_semantic_mask",
+    "real_compatible_fibrous_mask",
+    "real_compatible_clump_mask",
+    "real_compatible_uncertain_ignore_mask",
+    "real_compatible_skeleton_mask",
+}
 
 REQUIRED_ARRAYS_BY_SCHEMA = {
     DATASET_SCHEMA_VERSION: REQUIRED_ARRAYS,
@@ -270,6 +284,7 @@ REQUIRED_ARRAYS_BY_SCHEMA = {
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY: (
         REQUIRED_ARRAYS_3D_MORPHOLOGY_LEGACY
     ),
+    DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_0_7: REQUIRED_ARRAYS_3D_MORPHOLOGY_0_7,
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY: REQUIRED_ARRAYS_3D_MORPHOLOGY,
 }
 

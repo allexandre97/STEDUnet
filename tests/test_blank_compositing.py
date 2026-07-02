@@ -88,6 +88,95 @@ def test_blank_compositing_preserves_targets_and_provenance(tmp_path):
     assert validate_composites(out) == []
 
 
+def test_blank_pool_reuse_is_opt_in_within_split(tmp_path):
+    blank_root = tmp_path / "blank_root"
+    blank_root.mkdir()
+    rows = []
+    for i in range(4):
+        name = f"PN001_3R_AD_DIV01 (Series {i}) [1].tif"
+        Image.fromarray(np.full((64, 64), 4 + i, dtype=np.uint8)).save(blank_root / name)
+        rows.append(
+            {
+                "source_root_id": "sted_blank_data",
+                "relative_path": name,
+                "source_kind": "blank_background",
+                "source_sha256": f"sha{i}",
+                "pixel_sha256": f"pix{i}",
+                "stable_image_id": f"blank{i}",
+                "culture_id": "PN001",
+                "disease": "AD",
+                "tau_isoform": "3R",
+                "experimental_condition": "AD_3R",
+                "div": "1",
+                "div_token": "DIV01",
+                "series_index": str(i),
+                "experimental_group_id": "PN001_AD_3R_DIV01",
+                "acquisition_group": f"PN001_3R_AD_DIV01_{i}",
+                "blank_status": "expert_validated",
+            }
+        )
+    inventory_dir = tmp_path / "manifests"
+    inventory_dir.mkdir()
+    write_csv(inventory_dir / "sted_blanks.csv", rows)
+    write_csv(
+        inventory_dir / "blank_pools.csv",
+        [
+            dict(
+                row,
+                blank_pool_role="synthetic_background_train",
+                assignment_reason="fixture",
+                human_approved="false",
+                validation_source="human_expert_review",
+                validator_role="STED expert",
+                validation_date="not_recorded",
+                notes="",
+            )
+            for row in rows
+        ],
+    )
+    splits = tmp_path / "splits.csv"
+    write_csv(
+        splits,
+        [
+            dict(
+                row,
+                eligibility="training",
+                primary_metric_role="training",
+                secondary_image_eval_role="not_assigned",
+                assignment_reason="fixture",
+                grouping_rule="fixture",
+                human_approved="false",
+                synthetic_split="synthetic_background_train",
+                override_status="none",
+                override_reason="none",
+            )
+            for row in rows
+        ],
+    )
+    config = {
+        "dataset_name": "fixture_reused_composite",
+        "calibration_data_status": "exploratory_unpartitioned",
+        "source_roots": {"sted_blank_data": str(blank_root)},
+        "geometry": {"image_shape": [64, 64], "base_seed": 1, "fiber_count_range": [7, 7], "points_per_fiber": 24},
+        "targets": {},
+        "real_blank_rendering": {"base_seed": 2, "source_signal_scale": 1.0, "psf_sigma_px": 0.5, "uint8_min": 0, "uint8_max": 255},
+        "compositing": {
+            "base_seed": 3,
+            "sample_count": 8,
+            "synthetic_split": "synthetic_background_train",
+            "blank_pool_role": "synthetic_background_train",
+            "blank_pool_manifest": str(inventory_dir / "blank_pools.csv"),
+            "allow_blank_reuse_within_pool": True,
+            "blank_scale": 1.0,
+        },
+    }
+    out = tmp_path / "out_reuse"
+    generate_composites(config, inventory_dir, splits, out)
+    assert validate_composites(out) == []
+    with (out / "dataset_manifest.csv").open(newline="", encoding="utf-8") as f:
+        assert len(list(csv.DictReader(f))) == 8
+
+
 def test_3d_blank_compositing_preserves_normalized_targets(tmp_path):
     blank_root = tmp_path / "blank_root"
     blank_root.mkdir()

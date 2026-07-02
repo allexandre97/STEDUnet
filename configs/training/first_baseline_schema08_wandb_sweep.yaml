@@ -1,0 +1,35 @@
+program: scripts/train_first_baseline.py
+method: grid
+metric:
+  name: validation/skeleton_dice
+  goal: maximize
+parameters:
+  lambda_skeleton:
+    values: [0.25, 0.5, 1.0]
+  skeleton_pos_weight:
+    values: [4.0, 8.0, 16.0]
+  learning_rate:
+    values: [0.0001, 0.0003, 0.001]
+  batch_size:
+    values: [4, 8]
+  skeleton_threshold:
+    values: [0.4, 0.5, 0.6]
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --manifest
+  - data_manifests/training_v0_schema08.csv
+  - --out
+  - runs/first_baseline_schema08_wandb_sweep
+  - --epochs
+  - "5"
+  - --patch-size
+  - "128"
+  - --patches-per-epoch
+  - "256"
+  - --cache-samples
+  - --wandb
+  - --wandb-project
+  - sted-unet
+  - ${args}

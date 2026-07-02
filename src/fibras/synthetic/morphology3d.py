@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import hashlib
 from typing import Any
 
 import numpy as np
@@ -45,14 +46,28 @@ MODE_COUNTS = {
 }
 
 
+class InvalidGeometryCandidate(ValueError):
+    def __init__(self, sample_index: int, mode: str, object_type: str, object_index: int, attempts: int, message: str) -> None:
+        super().__init__(
+            f"{message}; sample_index={sample_index}, scene_mode={mode}, "
+            f"object_type={object_type}, object_index={object_index}, attempts={attempts}"
+        )
+        self.sample_index = sample_index
+        self.mode = mode
+        self.object_type = object_type
+        self.object_index = object_index
+        self.attempts = attempts
+
+
 def generate_morphology_geometry(
     config: dict[str, Any], sample_index: int
 ) -> dict[str, Any]:
     geometry_config = config["geometry"]
     scene_config = config.get("scene_morphology", {})
-    rng = np.random.default_rng(
-        int(geometry_config.get("base_seed", 81001)) + sample_index
-    )
+    base_seed = int(geometry_config.get("base_seed", 81001))
+    rng = np.random.default_rng(base_seed + sample_index)
+    max_attempts = int(geometry_config.get("invalid_geometry_max_attempts", 16))
+    diagnostics = invalid_geometry_diagnostics()
     height, width = map(int, geometry_config.get("image_shape", [1024, 1024]))
     depth = float(geometry_config.get("volume_depth_px", 96.0))
     focal_z = float(geometry_config.get("focal_plane_z_px", depth / 2))
@@ -101,47 +116,74 @@ def generate_morphology_geometry(
         if config.get("clumps", {}).get("enabled", True)
         else 0
     )
-    for _ in range(individual_count):
-        start, tangent = sample_start_tangent(
-            domains, scene_config, mode, rng, width, height, depth, focal_z
-        )
-        raw = persistent_vertices_from(
-            geometry_config,
-            config.get("individual_filaments", {}),
-            rng,
-            start,
-            tangent,
-            width,
-            height,
-            depth,
-        )
-        append_fiber(
-            fibers,
-            nodes,
-            edges,
-            raw,
-            geometry_config,
-            config.get("intensity_variation", {}),
-            rng,
-            structure_type="individual_filament",
-        )
-    for bundle_id in range(1, bundle_count + 1):
-        bundles.append(
-            add_bundle(
-                bundle_id,
-                fibers,
-                nodes,
-                edges,
-                domains,
-                config,
-                mode,
-                rng,
+    for individual_index in range(individual_count):
+        for attempt in range(max_attempts):
+            attempt_rng = candidate_rng(base_seed, sample_index, "individual_filament", individual_index, attempt)
+            start, tangent = sample_start_tangent(
+                domains, scene_config, mode, attempt_rng, width, height, depth, focal_z
+            )
+            raw = persistent_vertices_from(
+                geometry_config,
+                config.get("individual_filaments", {}),
+                attempt_rng,
+                start,
+                tangent,
                 width,
                 height,
                 depth,
-                focal_z,
             )
-        )
+            try:
+                append_fiber(
+                    fibers,
+                    nodes,
+                    edges,
+                    raw,
+                    geometry_config,
+                    config.get("intensity_variation", {}),
+                    attempt_rng,
+                    structure_type="individual_filament",
+                )
+                diagnostics["resample_attempt_count"] += attempt
+                break
+            except ValueError as exc:
+                if "no valid in-volume segment" not in str(exc):
+                    raise
+                diagnostics["invalid_geometry_candidate_count"] += 1
+                diagnostics["invalid_filament_count"] += 1
+        else:
+            raise InvalidGeometryCandidate(sample_index, mode, "individual_filament", individual_index, max_attempts, "individual filament has no valid in-volume segment")
+    for bundle_id in range(1, bundle_count + 1):
+        for attempt in range(max_attempts):
+            attempt_rng = candidate_rng(base_seed, sample_index, "bundle", bundle_id, attempt)
+            try:
+                bundles.append(
+                    add_bundle(
+                        bundle_id,
+                        fibers,
+                        nodes,
+                        edges,
+                        domains,
+                        config,
+                        mode,
+                        attempt_rng,
+                        width,
+                        height,
+                        depth,
+                        focal_z,
+                        sample_index=sample_index,
+                        diagnostics=diagnostics,
+                        max_attempts=max_attempts,
+                    )
+                )
+                diagnostics["resample_attempt_count"] += attempt
+                break
+            except ValueError as exc:
+                if "no valid in-volume segment" not in str(exc):
+                    raise
+                diagnostics["invalid_geometry_candidate_count"] += 1
+                diagnostics["invalid_bundle_count"] += 1
+        else:
+            raise InvalidGeometryCandidate(sample_index, mode, "bundle", bundle_id, max_attempts, "bundle axis has no valid in-volume segment")
     for clump_id in range(1, clump_count + 1):
         clumps.append(
             add_clump(
@@ -157,6 +199,10 @@ def generate_morphology_geometry(
                 height,
                 depth,
                 focal_z,
+                sample_index=sample_index,
+                diagnostics=diagnostics,
+                max_attempts=max_attempts,
+                base_seed=base_seed,
             )
         )
     if mode == "mixed_morphology" and clumps:
@@ -170,6 +216,11 @@ def generate_morphology_geometry(
             width,
             height,
             depth,
+            sample_index=sample_index,
+            mode=mode,
+            base_seed=base_seed,
+            diagnostics=diagnostics,
+            max_attempts=max_attempts,
         )
     return {
         "image_shape": (height, width),
@@ -195,6 +246,13 @@ def generate_morphology_geometry(
             "bundle_count": bundle_count,
             "clump_count": clump_count,
             "domain_count": len(domains),
+            "invalid_geometry_candidate_count": diagnostics["invalid_geometry_candidate_count"],
+            "invalid_bundle_child_count": diagnostics["invalid_bundle_child_count"],
+            "invalid_bundle_count": diagnostics["invalid_bundle_count"],
+            "invalid_filament_count": diagnostics["invalid_filament_count"],
+            "invalid_clump_fragment_count": diagnostics["invalid_clump_fragment_count"],
+            "resample_attempt_count": diagnostics["resample_attempt_count"],
+            "skipped_candidate_count": diagnostics["skipped_candidate_count"],
         },
     }
 
@@ -209,6 +267,30 @@ def scene_mode(config: dict[str, Any], sample_index: int) -> str:
     if mode not in SCENE_MODES:
         raise ValueError(f"unsupported scene morphology mode: {mode}")
     return mode
+
+
+def invalid_geometry_diagnostics() -> dict[str, int]:
+    return {
+        "invalid_geometry_candidate_count": 0,
+        "invalid_bundle_child_count": 0,
+        "invalid_bundle_count": 0,
+        "invalid_filament_count": 0,
+        "invalid_clump_fragment_count": 0,
+        "resample_attempt_count": 0,
+        "skipped_candidate_count": 0,
+    }
+
+
+def candidate_rng(
+    base_seed: int,
+    sample_index: int,
+    object_type: str,
+    object_index: int,
+    attempt_index: int,
+) -> np.random.Generator:
+    payload = f"{base_seed}:{sample_index}:{object_type}:{object_index}:{attempt_index}".encode("utf-8")
+    seed = int.from_bytes(hashlib.sha256(payload).digest()[:8], "little", signed=False)
+    return np.random.default_rng(seed)
 
 
 def sample_domains(
@@ -623,6 +705,10 @@ def add_bundle(
     height: int,
     depth: float,
     focal_z: float,
+    *,
+    sample_index: int = 0,
+    diagnostics: dict[str, int] | None = None,
+    max_attempts: int = 16,
 ) -> dict[str, Any]:
     bundle_config = config.get("bundles", {})
     start, tangent = sample_start_tangent(
@@ -708,35 +794,65 @@ def add_bundle(
     offsets = np.linspace(-0.75, 0.75, child_count) * radius_base
     child_ids = []
     for child_index, base_offset in enumerate(offsets):
-        child = offset_bundle_child(
-            axis,
-            base_offset,
-            twist_rate,
-            child_index,
-            child_count,
-            rng,
-            bundle_config,
-            envelope,
-        )
-        child_ids.append(
-            append_fiber(
-                fibers,
-                nodes,
-                edges,
-                child,
-                config["geometry"],
-                config.get("intensity_variation", {}),
-                rng,
-                structure_type="bundle_child",
-                parent_bundle_id=bundle_id,
-                supervised_samples=supervised_template,
-                start_status="ambiguous_termination"
-                if partial
-                else "terminates_in_bundle",
-                end_status="ambiguous_termination"
-                if partial
-                else "terminates_in_bundle",
+        for attempt in range(max_attempts):
+            child_rng = candidate_rng(
+                int(config["geometry"].get("base_seed", 81001)),
+                sample_index,
+                f"bundle_child_{bundle_id}",
+                child_index,
+                attempt,
             )
+            child = offset_bundle_child(
+                axis,
+                base_offset,
+                twist_rate,
+                child_index,
+                child_count,
+                child_rng,
+                bundle_config,
+                envelope,
+            )
+            try:
+                child_ids.append(
+                    append_fiber(
+                        fibers,
+                        nodes,
+                        edges,
+                        child,
+                        config["geometry"],
+                        config.get("intensity_variation", {}),
+                        child_rng,
+                        structure_type="bundle_child",
+                        parent_bundle_id=bundle_id,
+                        supervised_samples=supervised_template,
+                        start_status="ambiguous_termination"
+                        if partial
+                        else "terminates_in_bundle",
+                        end_status="ambiguous_termination"
+                        if partial
+                        else "terminates_in_bundle",
+                    )
+                )
+                if diagnostics is not None:
+                    diagnostics["resample_attempt_count"] += attempt
+                break
+            except ValueError as exc:
+                if "no valid in-volume segment" not in str(exc):
+                    raise
+                if diagnostics is not None:
+                    diagnostics["invalid_geometry_candidate_count"] += 1
+                    diagnostics["invalid_bundle_child_count"] += 1
+        else:
+            if diagnostics is not None:
+                diagnostics["skipped_candidate_count"] += 1
+    if not child_ids:
+        raise InvalidGeometryCandidate(
+            sample_index,
+            mode,
+            "bundle_child",
+            bundle_id,
+            max_attempts,
+            "bundle has no valid child fibers",
         )
     unresolved = np.ones(len(axis), dtype=np.uint8)
     if partial:
@@ -804,6 +920,11 @@ def add_clump(
     height: int,
     depth: float,
     focal_z: float,
+    *,
+    sample_index: int = 0,
+    diagnostics: dict[str, int] | None = None,
+    max_attempts: int = 16,
+    base_seed: int = 81001,
 ) -> dict[str, Any]:
     clump_config = config.get("clumps", {})
     center, _ = sample_start_tangent(
@@ -816,7 +937,8 @@ def add_clump(
         depth,
         focal_z,
     )
-    radius = _uniform(rng, clump_config.get("radius_range_px", [18, 55]))
+    _, radius_range = sample_clump_size_class(clump_config, rng)
+    radius = _uniform(rng, radius_range)
     aspect = _uniform(rng, clump_config.get("aspect_ratio_range", [0.55, 1.0]))
     depth_extent = _uniform(
         rng, clump_config.get("depth_extent_range", [8, 28])
@@ -842,47 +964,87 @@ def add_clump(
             )
         ),
     )
+    if "fragment_count_per_radius_px" in clump_config:
+        per_radius = _uniform(rng, clump_config["fragment_count_per_radius_px"])
+        fragment_count += int(round(radius * per_radius))
     fragment_ids = []
-    for _ in range(fragment_count):
-        local = _sample_inside_ellipsoid(rng, radii * 0.65)
-        start = center + local
-        tangent = _random_unit(rng)
-        fragment_length = _uniform(
-            rng, clump_config.get("fragment_length_range_px", [10, 42])
-        )
-        fragment_length *= rng.uniform(
-            1 - 0.3 * irregularity, 1 + 0.3 * irregularity
-        )
-        vertices = [start]
-        position = start.copy()
-        for _ in range(max(2, int(fragment_length / 4))):
-            tangent = _persistent_tangent(
-                tangent,
-                float(np.clip(0.75 - 0.4 * irregularity, 0.3, 0.7)),
-                rng,
+    fragment_intensity = clump_fragment_intensity_config(
+        config.get("intensity_variation", {}),
+        clump_config,
+        rng,
+    )
+    for fragment_index in range(fragment_count):
+        for attempt in range(max_attempts):
+            fragment_rng = candidate_rng(
+                base_seed,
+                sample_index,
+                f"clump_fragment_{clump_id}",
+                fragment_index,
+                attempt,
             )
-            position = position + tangent * 4
-            relative = position - center
-            norm = np.sum((relative / np.maximum(radii, 1e-6)) ** 2)
-            if norm > 1:
-                position = center + relative / math.sqrt(norm)
-                tangent *= -1
-            vertices.append(position.copy())
-        fragment_ids.append(
-            append_fiber(
-                fibers,
-                nodes,
-                edges,
-                np.asarray(vertices, dtype=np.float32),
-                config["geometry"],
-                config.get("intensity_variation", {}),
-                rng,
-                structure_type="clump_fragment",
-                parent_clump_id=clump_id,
-                supervised_samples=np.zeros(len(vertices), dtype=bool),
-                start_status="terminates_in_clump",
-                end_status="terminates_in_clump",
+            local = _sample_inside_ellipsoid(fragment_rng, radii * 0.72)
+            start = center + local
+            tangent = clump_fragment_tangent(
+                fragment_rng, clump_config, clump_id, fragment_index
             )
+            fragment_length = _uniform(
+                fragment_rng, clump_config.get("fragment_length_range_px", [10, 42])
+            )
+            fragment_length *= fragment_rng.uniform(
+                1 - 0.3 * irregularity, 1 + 0.3 * irregularity
+            )
+            vertices = [start]
+            position = start.copy()
+            for _ in range(max(2, int(fragment_length / 4))):
+                tangent = _persistent_tangent(
+                    tangent,
+                    float(np.clip(0.75 - 0.4 * irregularity, 0.3, 0.7)),
+                    fragment_rng,
+                )
+                position = position + tangent * 4
+                relative = position - center
+                norm = np.sum((relative / np.maximum(radii, 1e-6)) ** 2)
+                if norm > 1:
+                    position = center + relative / math.sqrt(norm)
+                    tangent *= -1
+                vertices.append(position.copy())
+            try:
+                fragment_ids.append(
+                    append_fiber(
+                        fibers,
+                        nodes,
+                        edges,
+                        np.asarray(vertices, dtype=np.float32),
+                        config["geometry"],
+                        fragment_intensity,
+                        fragment_rng,
+                        structure_type="clump_fragment",
+                        parent_clump_id=clump_id,
+                        supervised_samples=np.zeros(len(vertices), dtype=bool),
+                        start_status="terminates_in_clump",
+                        end_status="terminates_in_clump",
+                    )
+                )
+                if diagnostics is not None:
+                    diagnostics["resample_attempt_count"] += attempt
+                break
+            except ValueError as exc:
+                if "no valid in-volume segment" not in str(exc):
+                    raise
+                if diagnostics is not None:
+                    diagnostics["invalid_geometry_candidate_count"] += 1
+                    diagnostics["invalid_clump_fragment_count"] += 1
+        else:
+            if diagnostics is not None:
+                diagnostics["skipped_candidate_count"] += 1
+    if not fragment_ids:
+        raise InvalidGeometryCandidate(
+            sample_index,
+            mode,
+            "clump_fragment",
+            clump_id,
+            max_attempts,
+            "clump has no valid fragments",
         )
     return {
         "clump_id": clump_id,
@@ -897,6 +1059,77 @@ def add_clump(
     }
 
 
+def sample_clump_size_class(
+    config: dict[str, Any], rng: np.random.Generator
+) -> tuple[str, list[float]]:
+    mixture = config.get("size_mixture")
+    if not mixture:
+        return "default", config.get("radius_range_px", [18, 55])
+    names = sorted(mixture)
+    weights = np.asarray(
+        [float(mixture[name].get("weight", 1.0)) for name in names],
+        dtype=np.float64,
+    )
+    weights /= weights.sum()
+    name = names[int(rng.choice(len(names), p=weights))]
+    return name, mixture[name].get("radius_range_px", config.get("radius_range_px", [18, 55]))
+
+
+def clump_fragment_tangent(
+    rng: np.random.Generator,
+    config: dict[str, Any],
+    clump_id: int,
+    fragment_index: int,
+) -> np.ndarray:
+    tangent = _random_unit(rng)
+    align_probability = float(config.get("fragment_alignment_probability", 0.0))
+    if rng.random() >= align_probability:
+        return tangent
+    bundle_count = max(1, int(config.get("fragment_alignment_bundle_count", 3)))
+    angle = (
+        2 * math.pi * ((clump_id + fragment_index) % bundle_count) / bundle_count
+        + rng.normal(0, float(config.get("fragment_alignment_jitter_rad", 0.25)))
+    )
+    aligned = np.asarray(
+        [math.cos(angle), math.sin(angle), rng.normal(0, 0.08)], dtype=np.float64
+    )
+    strength = float(config.get("fragment_alignment_strength", 0.75))
+    tangent = (1 - strength) * tangent + strength * aligned
+    return tangent / max(float(np.linalg.norm(tangent)), 1e-8)
+
+
+def clump_fragment_intensity_config(
+    base_config: dict[str, Any],
+    clump_config: dict[str, Any],
+    rng: np.random.Generator,
+) -> dict[str, Any]:
+    config = dict(base_config)
+    amplitude_multiplier = _uniform(
+        rng, clump_config.get("fragment_amplitude_multiplier_range", [1.0, 1.0])
+    )
+    radius_multiplier = _uniform(
+        rng, clump_config.get("fragment_radius_multiplier_range", [1.0, 1.0])
+    )
+    if "base_amplitude_range" in config:
+        config["base_amplitude_range"] = [
+            float(v) * amplitude_multiplier for v in config["base_amplitude_range"]
+        ]
+    if "radius_range_px" in config:
+        config["radius_range_px"] = [
+            float(v) * radius_multiplier for v in config["radius_range_px"]
+        ]
+    for key in [
+        "gap_probability",
+        "punctate_probability",
+        "variation_amplitude",
+        "radius_variation_amplitude",
+    ]:
+        override = f"fragment_{key}"
+        if override in clump_config:
+            config[key] = clump_config[override]
+    return config
+
+
 def add_filament_terminating_in_clump(
     fibers: list[dict[str, Any]],
     nodes: list[dict[str, Any]],
@@ -907,25 +1140,51 @@ def add_filament_terminating_in_clump(
     width: int,
     height: int,
     depth: float,
+    *,
+    sample_index: int = 0,
+    mode: str = "mixed_morphology",
+    base_seed: int = 81001,
+    diagnostics: dict[str, int] | None = None,
+    max_attempts: int = 16,
 ) -> None:
     center = clump["center_xyz"].astype(np.float64)
-    direction = _random_unit(rng)
-    direction[2] *= 0.25
-    direction /= max(float(np.linalg.norm(direction)), 1e-8)
-    start = center - direction * min(width, height) * 0.18
-    end = center - direction * float(clump["radius_xyz"][0]) * 0.4
-    raw = np.linspace(start, end, 14, dtype=np.float32)
-    append_fiber(
-        fibers,
-        nodes,
-        edges,
-        raw,
-        config["geometry"],
-        config.get("intensity_variation", {}),
-        rng,
-        structure_type="individual_filament",
-        start_status="valid_endpoint",
-        end_status="terminates_in_clump",
+    for attempt in range(max_attempts):
+        attempt_rng = candidate_rng(base_seed, sample_index, "filament_terminating_in_clump", int(clump["clump_id"]), attempt)
+        direction = _random_unit(attempt_rng)
+        direction[2] *= 0.25
+        direction /= max(float(np.linalg.norm(direction)), 1e-8)
+        start = center - direction * min(width, height) * 0.18
+        end = center - direction * float(clump["radius_xyz"][0]) * 0.4
+        raw = np.linspace(start, end, 14, dtype=np.float32)
+        try:
+            append_fiber(
+                fibers,
+                nodes,
+                edges,
+                raw,
+                config["geometry"],
+                config.get("intensity_variation", {}),
+                attempt_rng,
+                structure_type="individual_filament",
+                start_status="valid_endpoint",
+                end_status="terminates_in_clump",
+            )
+            if diagnostics is not None:
+                diagnostics["resample_attempt_count"] += attempt
+            return
+        except ValueError as exc:
+            if "no valid in-volume segment" not in str(exc):
+                raise
+            if diagnostics is not None:
+                diagnostics["invalid_geometry_candidate_count"] += 1
+                diagnostics["invalid_filament_count"] += 1
+    raise InvalidGeometryCandidate(
+        sample_index,
+        mode,
+        "filament_terminating_in_clump",
+        int(clump["clump_id"]),
+        max_attempts,
+        "filament terminating in clump has no valid in-volume segment",
     )
 
 

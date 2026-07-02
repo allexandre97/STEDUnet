@@ -1,0 +1,16 @@
+name: fibras-training
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - pillow
+  - pyyaml=6
+  - pytest=8
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.1
+  - wandb

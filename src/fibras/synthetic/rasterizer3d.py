@@ -44,6 +44,9 @@ def rasterize_3d_sample(
     signal_arrays, signal_report = splat_geometry_signal(geometry, optical_config, visible_threshold, foreground_scale)
     arrays = {**target_arrays, **signal_arrays}
     if "semantic_class_mask" in arrays:
+        apparent_report = finalize_morphology_apparent_targets(
+            arrays, visible_threshold, targets_config
+        )
         arrays["semantic_mask"] = np.isin(
             arrays["semantic_class_mask"], [1, 2, 3]
         ).astype(np.uint8)
@@ -73,6 +76,7 @@ def rasterize_3d_sample(
         **psf_report,
         **target_report,
         **optional_report,
+        **(apparent_report if "semantic_class_mask" in arrays else {}),
         **alignment_report,
         **mapping,
         "float_to_uint8_mapping": mapping,
@@ -127,18 +131,43 @@ def class_signal_alignment(
         compatible = mask if name == "uncertain_transition" else mask | uncertain
         visible_energy = float(signal[visible].sum())
         outside_energy = float(signal[visible & ~compatible].sum())
+        inside_energy = float(signal[visible & mask].sum())
+        source_mask = arrays.get(f"{name}_source_support_mask")
+        source_area = (
+            int(np.count_nonzero(source_mask))
+            if isinstance(source_mask, np.ndarray)
+            else None
+        )
         ridge = ridge_response(signal)
+        scene_spill = (
+            None
+            if name == "uncertain_transition"
+            else (outside_energy / visible_energy if visible_energy > 0 else 0.0)
+        )
         report[name] = {
             "class_area_px": area,
+            "source_support_area_px": source_area,
+            "apparent_mask_area_px": area,
+            "apparent_to_source_area_ratio": (
+                float(area / source_area)
+                if source_area not in {None, 0}
+                else None
+            ),
             "fraction_of_class_mask_above_visible_threshold": (
-                float(np.mean(values > visible_threshold)) if area else None
+                float(np.mean(values >= visible_threshold)) if area else None
             ),
             "fraction_of_class_mask_with_nonzero_signal": (
                 float(np.mean(values > 0)) if area else None
             ),
-            "fraction_of_visible_class_signal_outside_class_mask": (
-                outside_energy / visible_energy if visible_energy > 0 else 0.0
+            "fraction_of_visible_class_signal_inside_apparent_mask": (
+                None
+                if name == "uncertain_transition"
+                else (inside_energy / visible_energy if visible_energy > 0 else 0.0)
             ),
+            "fraction_of_apparent_mask_with_visible_class_signal": (
+                float(np.mean(values >= visible_threshold)) if area else None
+            ),
+            "fraction_of_visible_class_signal_outside_class_mask": scene_spill,
             "signal_p50_inside_class": percentile_or_none(values, 50),
             "signal_p95_inside_class": percentile_or_none(values, 95),
             "signal_p99_inside_class": percentile_or_none(values, 99),
@@ -155,10 +184,120 @@ def class_signal_alignment(
             "signal_alignment_acceptance", {}
         ),
         "class_signal_alignment_semantics": (
-            "class-attributed clean optical signal; PSF spill is measured "
-            "outside the class or configured uncertain-transition mask"
+            "class-attributed clean optical signal compared with schema-0.8 "
+            "apparent supervised masks; uncertain-transition scene-wide spill "
+            "is not applicable"
         ),
     }
+
+
+def finalize_morphology_apparent_targets(
+    arrays: dict[str, np.ndarray],
+    visible_threshold: float,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    for name in ["individual_filament", "bundle", "clump"]:
+        source_name = f"{name}_source_support_mask"
+        mask_name = f"{name}_mask"
+        if source_name not in arrays:
+            arrays[source_name] = arrays[mask_name].copy()
+
+    low_factor = float(config.get("apparent_mask_visibility_low_factor", 0.75))
+    high_factor = float(config.get("apparent_mask_visibility_high_factor", 1.0))
+    if not (0 <= low_factor <= high_factor):
+        raise ValueError("apparent mask visibility factors must satisfy 0 <= low <= high")
+    low_threshold = low_factor * visible_threshold
+    high_threshold = high_factor * visible_threshold
+    max_distance = float(config.get("apparent_mask_max_source_distance_px", 4.0))
+
+    regions = {
+        name: source_influence_region(
+            arrays[f"{name}_source_support_mask"].astype(bool), max_distance
+        )
+        for name in ["individual_filament", "bundle", "clump"]
+    }
+    signals = {
+        "individual_filament": arrays["individual_filament_signal"],
+        "bundle": arrays["bundle_signal"],
+        "clump": arrays["clump_signal"],
+    }
+    high = {
+        name: (signal >= high_threshold) & regions[name]
+        for name, signal in signals.items()
+    }
+    low = {
+        name: (signal >= low_threshold) & (signal < high_threshold) & regions[name]
+        for name, signal in signals.items()
+    }
+
+    semantic = np.zeros_like(arrays["semantic_class_mask"], dtype=np.uint8)
+    semantic[high["individual_filament"]] = 1
+    semantic[high["bundle"]] = 2
+    semantic[high["clump"]] = 3
+    source_union = (
+        arrays["individual_filament_source_support_mask"].astype(bool)
+        | arrays["bundle_source_support_mask"].astype(bool)
+        | arrays["clump_source_support_mask"].astype(bool)
+    )
+    transition_uncertain = (
+        arrays["uncertain_ignore_mask"].astype(bool)
+        | arrays["bundle_transition_mask"].astype(bool)
+        | arrays["clump_transition_mask"].astype(bool)
+    ) & source_union
+    uncertain = (low["individual_filament"] | low["bundle"] | low["clump"]) & (semantic == 0)
+    uncertain |= transition_uncertain
+    semantic[uncertain] = 255
+
+    arrays["semantic_class_mask"] = semantic
+    arrays["individual_filament_mask"] = (semantic == 1).astype(np.uint8)
+    arrays["bundle_mask"] = (semantic == 2).astype(np.uint8)
+    arrays["clump_mask"] = (semantic == 3).astype(np.uint8)
+    arrays["uncertain_ignore_mask"] = (semantic == 255).astype(np.uint8)
+    arrays["semantic_mask"] = np.isin(semantic, [1, 2, 3]).astype(np.uint8)
+    arrays["filament_centerline_mask"] &= arrays["individual_filament_mask"]
+    arrays["centerline_mask"] = arrays["filament_centerline_mask"].copy()
+    arrays["bundle_axis_mask"] &= arrays["bundle_mask"]
+    arrays["endpoint_map"] &= arrays["individual_filament_mask"]
+
+    individual_membership_arrays = apparent_membership_arrays(
+        "individual_filament", arrays["individual_filament_mask"], arrays
+    )
+    bundle_membership_arrays = apparent_membership_arrays(
+        "bundle", arrays["bundle_mask"], arrays
+    )
+    clump_membership_arrays = apparent_membership_arrays(
+        "clump", arrays["clump_mask"], arrays
+    )
+    arrays.update(individual_membership_arrays)
+    arrays.update(bundle_membership_arrays)
+    arrays.update(clump_membership_arrays)
+    arrays.update(
+        combine_supervised_memberships(
+            arrays["semantic_class_mask"].shape,
+            individual_membership_arrays,
+            bundle_membership_arrays,
+            clump_membership_arrays,
+        )
+    )
+    return {
+        "apparent_mask_rule": {
+            "source": "class_attributed_optical_signal",
+            "confident_threshold": "class_signal >= visible_signal_threshold * high_factor",
+            "uncertain_threshold": "low_threshold <= class_signal < high_threshold",
+            "low_factor": low_factor,
+            "high_factor": high_factor,
+            "max_source_distance_px": max_distance,
+            "class_priority": ["individual_filament", "bundle", "clump", "uncertain_ignore"],
+        }
+    }
+
+
+def source_influence_region(source: np.ndarray, max_distance_px: float) -> np.ndarray:
+    if not np.any(source):
+        return source.copy()
+    if scipy_ndimage is None:
+        return source.copy()
+    return scipy_ndimage.distance_transform_edt(~source) <= max_distance_px
 
 
 def ridge_response(image: np.ndarray) -> np.ndarray:
@@ -507,12 +646,20 @@ def morphology_targets_3d(
             )
         )
 
+    clump_halo = clump_uncertain_halo_mask(
+        clump_raw.astype(bool),
+        float(config.get("clump_uncertain_halo_px", 0.0)),
+    )
     semantic_class = np.zeros(shape, dtype=np.uint8)
     semantic_class[individual_raw.astype(bool)] = 1
     semantic_class[bundle_raw.astype(bool)] = 2
     semantic_class[clump_raw.astype(bool)] = 3
+    individual_source_support = (semantic_class == 1).astype(np.uint8)
+    bundle_source_support = (semantic_class == 2).astype(np.uint8)
+    clump_source_support = (semantic_class == 3).astype(np.uint8)
     uncertain = np.zeros(shape, dtype=np.uint8)
     if mark_transitions:
+        clump_transition |= clump_halo.astype(np.uint8)
         uncertain = (
             (bundle_transition.astype(bool) | clump_transition.astype(bool))
             & (semantic_class > 0)
@@ -558,6 +705,9 @@ def morphology_targets_3d(
     arrays.update(
         {
             "semantic_class_mask": semantic_class,
+            "individual_filament_source_support_mask": individual_source_support,
+            "bundle_source_support_mask": bundle_source_support,
+            "clump_source_support_mask": clump_source_support,
             "individual_filament_mask": individual,
             "bundle_mask": bundle,
             "clump_mask": clump,
@@ -623,6 +773,15 @@ def morphology_targets_3d(
     return arrays, report
 
 
+def clump_uncertain_halo_mask(clump_mask: np.ndarray, width_px: float) -> np.ndarray:
+    if width_px <= 0 or not np.any(clump_mask) or scipy_ndimage is None:
+        return np.zeros_like(clump_mask, dtype=bool)
+    iterations = max(1, int(math.ceil(width_px)))
+    inner = scipy_ndimage.binary_erosion(clump_mask, iterations=iterations)
+    outer = scipy_ndimage.binary_dilation(clump_mask, iterations=iterations)
+    return outer & ~inner
+
+
 def contiguous_true_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     padded = np.pad(mask.astype(np.int8), (1, 1))
     changes = np.diff(padded)
@@ -657,6 +816,35 @@ def filter_memberships(
         keep = class_mask[y, x].astype(bool)
         output.append((y[keep], x[keep], ids[keep]))
     return output
+
+
+def apparent_membership_arrays(
+    prefix: str,
+    class_mask: np.ndarray,
+    arrays: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    y0 = arrays.get(f"{prefix}_membership_y", np.zeros(0, dtype=np.int32))
+    x0 = arrays.get(f"{prefix}_membership_x", np.zeros(0, dtype=np.int32))
+    ids0 = arrays.get(
+        f"{prefix}_membership_instance_id", np.zeros(0, dtype=np.int32)
+    )
+    keep = class_mask[y0, x0].astype(bool) if y0.size else np.zeros(0, dtype=bool)
+    y = y0[keep].astype(np.int32)
+    x = x0[keep].astype(np.int32)
+    ids = ids0[keep].astype(np.int32)
+    covered = np.zeros_like(class_mask, dtype=bool)
+    if y.size:
+        covered[y, x] = True
+    missing_y, missing_x = np.nonzero(class_mask.astype(bool) & ~covered)
+    if missing_y.size:
+        y = np.concatenate([y, missing_y.astype(np.int32)])
+        x = np.concatenate([x, missing_x.astype(np.int32)])
+        ids = np.concatenate([ids, np.zeros(missing_y.shape, dtype=np.int32)])
+    return {
+        f"{prefix}_membership_y": y.astype(np.int32),
+        f"{prefix}_membership_x": x.astype(np.int32),
+        f"{prefix}_membership_instance_id": ids.astype(np.int32),
+    }
 
 
 def combine_supervised_memberships(
@@ -863,6 +1051,12 @@ def splat_geometry_signal(
         contributing_x.append(cx.astype(np.int32))
         contributing_i.append(np.full(cy.shape, int(fiber["fiber_id"]), dtype=np.int32))
 
+    clump_texture = clump_texture_signal(class_signal["clump"], config)
+    if np.any(clump_texture):
+        total_in += clump_texture
+        total_core += clump_texture
+        class_signal["clump"] += clump_texture
+
     optical_total = total_in + total_out
     total = optical_total * foreground_scale
     total_in_scaled = total_in * foreground_scale
@@ -930,6 +1124,12 @@ def splat_geometry_signal(
         "visible_instance_membership_semantics": "instances whose individual scaled clean signal exceeds visible_signal_threshold",
         "contributing_instance_membership_semantics": "instances whose individual scaled clean signal exceeds contributing_signal_threshold",
         "combined_only_visible_mask_semantics": "pixels where summed clean signal exceeds visible threshold but no individual instance does",
+        "clump_hard_negative_rendering": {
+            "clump_texture_gain": float(config.get("clump_texture_gain", 0.0)),
+            "clump_texture_narrow_sigma_px": float(config.get("clump_texture_narrow_sigma_px", 1.0)),
+            "clump_texture_broad_sigma_px": float(config.get("clump_texture_broad_sigma_px", 4.0)),
+            "clump_texture_integral": float(np.sum(clump_texture * foreground_scale)),
+        },
         "line_density_units": "empirical_signal_units_per_pixel_equivalent_contour_length",
         "total_represented_contour_length_px": float(sum(np.sum(sample_arc_length_weights(f["points_xyz"])) for f in geometry["fibers"])),
         "total_emitted_source_signal": total_source_signal,
@@ -939,6 +1139,18 @@ def splat_geometry_signal(
         "halo_integrated_signal": float(np.sum(total_halo_scaled)),
         **finalize_kernel_stats(kernel_stats),
     }
+
+
+def clump_texture_signal(clump_signal: np.ndarray, config: dict[str, Any]) -> np.ndarray:
+    gain = float(config.get("clump_texture_gain", 0.0))
+    if gain <= 0 or not np.any(clump_signal) or scipy_ndimage is None:
+        return np.zeros_like(clump_signal, dtype=np.float32)
+    narrow_sigma = float(config.get("clump_texture_narrow_sigma_px", 1.0))
+    broad_sigma = float(config.get("clump_texture_broad_sigma_px", 4.0))
+    narrow = scipy_ndimage.gaussian_filter(clump_signal.astype(np.float32), narrow_sigma)
+    broad = scipy_ndimage.gaussian_filter(clump_signal.astype(np.float32), broad_sigma)
+    texture = np.maximum(narrow - broad, 0)
+    return (gain * texture).astype(np.float32)
 
 
 def splat_points(
@@ -1508,7 +1720,7 @@ def select_semantic_mask(arrays: dict[str, np.ndarray], config: dict[str, Any]) 
 def scenario_category(scenario: str, config: dict[str, Any] | None = None) -> str:
     if config and config.get("scenario_category"):
         value = str(config["scenario_category"])
-        if value not in {"structural_qa", "optical_qa", "realism_calibration"}:
+        if value not in {"structural_qa", "optical_qa", "realism_calibration", "clump_ignore_stress"}:
             raise ValueError(f"invalid scenario_category: {value}")
         return value
     if scenario in STRUCTURAL_QA_SCENARIOS:
@@ -1719,7 +1931,7 @@ def _measure_isolated_fiber_fwhm_uncached(config: dict[str, Any], angle_degrees:
         "target_fwhm_px": float(width_cfg.get("target_fwhm_px", 5.0)),
         "min_allowed_fwhm_px": float(width_cfg.get("min_allowed_fwhm_px", 4.5)),
         "max_allowed_fwhm_px": float(width_cfg.get("max_allowed_fwhm_px", 5.5)),
-        "integrated_transverse_signal": float(np.trapezoid(profile, profile_x)),
+        "integrated_transverse_signal": trapezoid_integral(profile, profile_x),
         "peak_transverse_signal": float(np.max(profile)),
         "line_density_amplitude": float(np.mean(geometry["fibers"][0]["sample_amplitude"])),
         "sampling_interval_px": float(geometry_config.get("arc_length_sampling_interval_px", 1.0)),
@@ -1729,6 +1941,13 @@ def _measure_isolated_fiber_fwhm_uncached(config: dict[str, Any], angle_degrees:
 
 def clear_width_calibration_cache() -> None:
     _measure_isolated_fiber_fwhm_cached.cache_clear()
+
+
+def trapezoid_integral(y: np.ndarray, x: np.ndarray) -> float:
+    integrate = getattr(np, "trapezoid", None)
+    if integrate is None:
+        integrate = np.trapz
+    return float(integrate(y, x))
 
 
 def width_calibration_cache_info() -> Any:

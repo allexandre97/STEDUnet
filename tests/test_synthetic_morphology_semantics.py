@@ -24,7 +24,11 @@ from fibras.synthetic.schema import (
     TRACE_TERMINATION_STATUS_CODES,
     load_yaml,
 )
-from fibras.synthetic.storage import build_sample, validate_sample_arrays
+from fibras.synthetic.storage import (
+    build_sample,
+    validate_sample_arrays,
+    validate_signal_alignment,
+)
 
 
 def morphology_config(mode="mixed_morphology"):
@@ -65,7 +69,7 @@ def test_supervised_and_latent_memberships_are_explicitly_separated():
 def test_latent_bundle_and_clump_curves_are_not_supervised_edges_or_filaments():
     _, arrays, _ = build_sample(morphology_config(), 1)
     fiber_type = dict(zip(arrays["fiber_ids"], arrays["fiber_structure_type"]))
-    filament_ids = set(arrays["individual_filament_membership_instance_id"])
+    filament_ids = set(arrays["individual_filament_membership_instance_id"]) - {0}
     assert all(fiber_type[int(fid)] != 3 for fid in filament_ids)
     assert np.all(
         arrays["edge_supervised"][arrays["edge_structure_type"] != 1] == 0
@@ -310,6 +314,56 @@ def test_class_signal_alignment_is_reported_and_validator_enforces_limits():
     ]["fraction_of_class_mask_with_nonzero_signal"] = 0.0
     errors = validate_sample_arrays(malformed["sample_id"], arrays, malformed)
     assert any("insufficient rendered signal" in error for error in errors)
+
+
+def test_signal_alignment_allows_class_priority_occlusion_not_background_spill():
+    shape = (4, 4)
+    arrays = {
+        "individual_filament_mask": np.zeros(shape, dtype=np.uint8),
+        "bundle_mask": np.zeros(shape, dtype=np.uint8),
+        "clump_mask": np.zeros(shape, dtype=np.uint8),
+        "uncertain_ignore_mask": np.zeros(shape, dtype=np.uint8),
+        "individual_filament_signal": np.zeros(shape, dtype=np.float32),
+        "bundle_signal": np.zeros(shape, dtype=np.float32),
+        "clump_signal": np.zeros(shape, dtype=np.float32),
+    }
+    arrays["individual_filament_mask"][0, 0] = 1
+    arrays["clump_mask"][1:, :] = 1
+    arrays["individual_filament_signal"][0, 0] = 4
+    arrays["individual_filament_signal"][1:, :] = 40
+    metadata = {
+        "rendering_report": {
+            "visible_signal_threshold": 3.0,
+            "class_signal_alignment": {
+                "individual_filament": {
+                    "class_area_px": 1,
+                    "fraction_of_class_mask_with_nonzero_signal": 1.0,
+                    "fraction_of_visible_class_signal_outside_class_mask": 0.9,
+                }
+            },
+        },
+        "generation_config": {
+            "targets": {
+                "signal_alignment_acceptance": {
+                    "min_nonzero_fraction": 0.05,
+                    "max_visible_signal_outside_fraction": 0.75,
+                }
+            }
+        },
+    }
+    for name in ["bundle", "clump"]:
+        metadata["rendering_report"]["class_signal_alignment"][name] = {
+            "class_area_px": 0,
+            "fraction_of_class_mask_with_nonzero_signal": None,
+            "fraction_of_visible_class_signal_outside_class_mask": 0.0,
+        }
+
+    assert validate_signal_alignment("sample", metadata, arrays) == []
+    arrays["individual_filament_signal"][0, 1] = 2000
+    assert any(
+        "signal spill" in error
+        for error in validate_signal_alignment("sample", metadata, arrays)
+    )
 
 
 def test_schema_06_remains_explicitly_validated_without_reinterpretation():

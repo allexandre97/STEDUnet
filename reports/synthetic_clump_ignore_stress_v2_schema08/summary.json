@@ -1,0 +1,112 @@
+{
+  "composite": {
+    "dataset_dir": "examples/sted_blank_composites_clump_ignore_stress_v2_schema08",
+    "distribution": {
+      "clump_area_fraction": {
+        "max": 0.17156505584716797,
+        "mean": 0.06645676493644714,
+        "p50": 0.056948184967041016,
+        "p95": 0.1388319492340088
+      },
+      "largest_clump_component_fraction": {
+        "max": 0.0911397933959961,
+        "mean": 0.041213423013687134,
+        "p50": 0.03519773483276367,
+        "p95": 0.08877201080322265
+      },
+      "largest_clump_gt_10_fraction": 0.0,
+      "largest_clump_gt_5_fraction": 0.3125
+    },
+    "max_leakage": {
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0
+    },
+    "mean": {
+      "background_region_intensity_p50": 3.0625,
+      "background_region_intensity_p95": 10.96875,
+      "background_region_intensity_p99": 15.5625,
+      "clump_area_fraction": 0.06645676493644714,
+      "clump_high_signal_fraction": 0.752535589428541,
+      "clump_region_intensity_p50": 237.0625,
+      "clump_region_intensity_p95": 255.0,
+      "clump_region_intensity_p99": 255.0,
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "intensity_p50": 3.625,
+      "intensity_p95": 132.34375,
+      "intensity_p99": 253.46875,
+      "largest_clump_component_fraction": 0.041213423013687134,
+      "max_patch_clump_fraction": 0.799224853515625,
+      "patch_fraction_clump_gt_25": 0.09765625,
+      "patch_fraction_clump_gt_50": 0.052734375,
+      "patch_fraction_uncertain_gt_10": 0.0556640625,
+      "patch_skeleton_pixels_inside_clump": 0.0,
+      "patch_skeleton_pixels_inside_uncertain_ignore": 0.0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0,
+      "uncertain_ignore_fraction": 0.016038984060287476,
+      "uncertain_ignore_high_signal_fraction": 0.46528291162221835,
+      "uncertain_ignore_region_intensity_p50": 78.53125,
+      "uncertain_ignore_region_intensity_p95": 255.0,
+      "uncertain_ignore_region_intensity_p99": 255.0
+    },
+    "sample_count": 32
+  },
+  "synthetic": {
+    "dataset_dir": "examples/synthetic_sted_clump_ignore_stress_v2_schema08",
+    "distribution": {
+      "clump_area_fraction": {
+        "max": 0.17156505584716797,
+        "mean": 0.06645676493644714,
+        "p50": 0.056948184967041016,
+        "p95": 0.1388319492340088
+      },
+      "largest_clump_component_fraction": {
+        "max": 0.0911397933959961,
+        "mean": 0.041213423013687134,
+        "p50": 0.03519773483276367,
+        "p95": 0.08877201080322265
+      },
+      "largest_clump_gt_10_fraction": 0.0,
+      "largest_clump_gt_5_fraction": 0.3125
+    },
+    "max_leakage": {
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0
+    },
+    "mean": {
+      "background_region_intensity_p50": 4.0,
+      "background_region_intensity_p95": 4.125,
+      "background_region_intensity_p99": 5.375,
+      "clump_area_fraction": 0.06645676493644714,
+      "clump_high_signal_fraction": 0.7071686541601019,
+      "clump_region_intensity_p50": 126.21875,
+      "clump_region_intensity_p95": 255.0,
+      "clump_region_intensity_p99": 255.0,
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "intensity_p50": 4.0,
+      "intensity_p95": 58.03125,
+      "intensity_p99": 239.25,
+      "largest_clump_component_fraction": 0.041213423013687134,
+      "max_patch_clump_fraction": 0.799224853515625,
+      "patch_fraction_clump_gt_25": 0.09765625,
+      "patch_fraction_clump_gt_50": 0.052734375,
+      "patch_fraction_uncertain_gt_10": 0.0556640625,
+      "patch_skeleton_pixels_inside_clump": 0.0,
+      "patch_skeleton_pixels_inside_uncertain_ignore": 0.0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0,
+      "uncertain_ignore_fraction": 0.016038984060287476,
+      "uncertain_ignore_high_signal_fraction": 0.46211376106742996,
+      "uncertain_ignore_region_intensity_p50": 24.84375,
+      "uncertain_ignore_region_intensity_p95": 240.88905334472656,
+      "uncertain_ignore_region_intensity_p99": 255.0
+    },
+    "sample_count": 32
+  }
+}

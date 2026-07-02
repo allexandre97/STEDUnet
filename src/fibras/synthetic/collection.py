@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
@@ -15,6 +16,13 @@ from .schema import (
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY_LEGACY,
 )
+from .storage import set_worker_thread_limits
+
+
+COMPOSITE_PARENT_SCENARIO_CATEGORIES = {
+    "realism_calibration",
+    "clump_ignore_stress",
+}
 
 
 def read_manifest(dataset_dir: Path) -> list[dict[str, str]]:
@@ -25,7 +33,9 @@ def read_manifest(dataset_dir: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def validate_dataset_collection(dataset_dirs: list[Path]) -> list[str]:
+def validate_dataset_collection(dataset_dirs: list[Path], num_workers: int = 1) -> list[str]:
+    if num_workers < 1:
+        raise ValueError("num_workers must be at least 1")
     errors: list[str] = []
     records: dict[str, list[dict[str, Any]]] = {}
     namespaces: dict[str, Path] = {}
@@ -67,6 +77,7 @@ def validate_dataset_collection(dataset_dirs: list[Path]) -> list[str]:
         for sample_id, matches in records.items()
         if len(matches) == 1
     }
+    parent_checks: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for sample_id, record in unique.items():
         metadata = record["metadata"]
         parent_id = metadata.get("parent_synthetic_sample_id")
@@ -79,7 +90,31 @@ def validate_dataset_collection(dataset_dirs: list[Path]) -> list[str]:
         if parent is None:
             errors.append(f"{sample_id}: unresolved parent {parent_id}")
             continue
-        errors.extend(validate_parent(sample_id, record, parent))
+        parent_checks.append((sample_id, record, parent))
+    if num_workers == 1:
+        for sample_id, record, parent in parent_checks:
+            errors.extend(validate_parent(sample_id, record, parent))
+    else:
+        set_worker_thread_limits()
+        errors_by_index: dict[int, list[str]] = {}
+        with ProcessPoolExecutor(
+            max_workers=num_workers, initializer=set_worker_thread_limits
+        ) as pool:
+            futures = {
+                pool.submit(validate_parent, sample_id, record, parent): index
+                for index, (sample_id, record, parent) in enumerate(parent_checks)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                sample_id = parent_checks[index][0]
+                try:
+                    errors_by_index[index] = future.result()
+                except Exception as exc:
+                    errors_by_index[index] = [
+                        f"{sample_id}: validator worker failed: {type(exc).__name__}: {exc}"
+                    ]
+        for index in range(len(parent_checks)):
+            errors.extend(errors_by_index.get(index, []))
     return errors
 
 
@@ -124,9 +159,10 @@ def validate_parent(
         "scenario_category",
         parent_meta.get("rendering_report", {}).get("scenario_category"),
     )
-    if category != "realism_calibration":
+    if category not in COMPOSITE_PARENT_SCENARIO_CATEGORIES:
         errors.append(
-            f"{sample_id}: composite parent category must be realism_calibration, "
+            f"{sample_id}: composite parent category must be one of "
+            f"{sorted(COMPOSITE_PARENT_SCENARIO_CATEGORIES)}, "
             f"not {category!r}"
         )
     if not parent["npz"].exists() or not composite["npz"].exists():

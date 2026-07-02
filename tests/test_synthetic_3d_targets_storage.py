@@ -1,8 +1,11 @@
+import copy
+import json
+
 import numpy as np
 
 from fibras.synthetic.geometry3d import generate_persistent_chain_geometry
 from fibras.synthetic.rasterizer3d import rasterize_3d_sample
-from fibras.synthetic.storage import save_dataset, validate_dataset
+from fibras.synthetic.storage import save_dataset, validate_dataset, validate_sample_arrays
 
 
 def base_config():
@@ -56,6 +59,28 @@ def test_3d_targets_preserve_mask_semantics_and_depth_maps():
     contributing = arrays["total_clean_signal"] > 0
     assert np.all(arrays["nearest_depth_map"][contributing] >= 0)
     assert np.all(arrays["weighted_mean_depth_map"][contributing] >= 0)
+
+
+def test_depth_validation_allows_tiny_negative_roundoff(tmp_path):
+    cfg = dict(base_config(), sample_count=1)
+    save_dataset(cfg, tmp_path)
+    metadata = json.loads((tmp_path / "small_3d_0000.json").read_text(encoding="utf-8"))
+    with np.load(tmp_path / "small_3d_0000.npz", allow_pickle=False) as data:
+        arrays = {name: data[name].copy() for name in data.files}
+    y, x = np.argwhere(arrays["contributing_overlap_count"] > 0)[0]
+
+    rounded = copy.deepcopy(arrays)
+    rounded["nearest_depth_map"][y, x] = -1e-8
+    rounded["weighted_mean_depth_map"][y, x] = -1e-8
+    assert "depth maps missing" not in "\n".join(
+        validate_sample_arrays(metadata["sample_id"], rounded, metadata)
+    )
+
+    missing = copy.deepcopy(arrays)
+    missing["nearest_depth_map"][y, x] = -1.0
+    assert "depth maps missing" in "\n".join(
+        validate_sample_arrays(metadata["sample_id"], missing, metadata)
+    )
 
 
 def test_true_junction_is_connected_in_3d_graph():

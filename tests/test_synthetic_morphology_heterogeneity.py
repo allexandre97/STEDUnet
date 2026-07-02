@@ -6,6 +6,8 @@ from fibras.calibration.morphology import (
     generated_scene_diagnostics,
     tile_occupancy,
 )
+import fibras.synthetic.morphology3d as morphology3d
+from scripts.build_clump_ignore_stress_report import sample_metrics
 from fibras.synthetic.morphology3d import generate_morphology_geometry
 from fibras.synthetic.schema import (
     DATASET_SCHEMA_VERSION_3D_MORPHOLOGY,
@@ -43,6 +45,43 @@ def test_fixed_seed_reproduces_identical_morphology_scene():
     )
     assert set(first[1]) == set(second[1])
     for name in first[1]:
+        assert np.array_equal(first[1][name], second[1][name]), name
+
+
+def test_invalid_in_volume_candidate_is_retried_deterministically(monkeypatch):
+    cfg = config("isolated_filaments")
+    cfg["individual_filaments"]["count_range_by_mode"] = {
+        "isolated_filaments": [4, 4]
+    }
+    cfg["geometry"]["invalid_geometry_max_attempts"] = 4
+    original_clip = morphology3d.clip_curve_to_volume
+
+    def fail_first_clip_once():
+        state = {"calls": 0}
+
+        def wrapped(points, limits):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise ValueError("fiber has no valid in-volume segment")
+            return original_clip(points, limits)
+
+        return wrapped
+
+    monkeypatch.setattr(morphology3d, "clip_curve_to_volume", fail_first_clip_once())
+    first = build_sample(cfg, 3)
+    monkeypatch.setattr(morphology3d, "clip_curve_to_volume", fail_first_clip_once())
+    second = build_sample(cfg, 3)
+
+    assert first[2]["geometry_parameters"]["invalid_geometry_candidate_count"] == 1
+    assert first[2]["geometry_parameters"]["invalid_filament_count"] == 1
+    assert first[2]["geometry_parameters"]["resample_attempt_count"] >= 1
+    assert validate_sample_arrays(first[0], first[1], first[2]) == []
+    for name in [
+        "render_uint8",
+        "semantic_class_mask",
+        "real_compatible_semantic_mask",
+        "real_compatible_skeleton_mask",
+    ]:
         assert np.array_equal(first[1][name], second[1][name]), name
 
 
@@ -159,21 +198,18 @@ def test_foreground_scale_does_not_change_geometry_or_class_targets():
     _, base_arrays, _ = build_sample(base, 3)
     _, bright_arrays, _ = build_sample(bright, 3)
     structural = [
-        "semantic_class_mask",
-        "semantic_mask",
-        "individual_filament_mask",
-        "bundle_mask",
-        "clump_mask",
-        "uncertain_ignore_mask",
-        "filament_centerline_mask",
-        "bundle_axis_mask",
-        "endpoint_map",
+        "individual_filament_source_support_mask",
+        "bundle_source_support_mask",
+        "clump_source_support_mask",
         "trace_points_xy",
         "trace_start_status",
         "trace_end_status",
     ]
     for name in structural:
         assert np.array_equal(base_arrays[name], bright_arrays[name]), name
+    assert not np.array_equal(
+        base_arrays["semantic_class_mask"], bright_arrays["semantic_class_mask"]
+    )
     assert not np.array_equal(
         base_arrays["total_clean_signal"], bright_arrays["total_clean_signal"]
     )
@@ -195,6 +231,165 @@ def test_scientific_metadata_labels_do_not_select_morphology_parameters():
     assert first["parameters"] == second["parameters"]
     for a, b in zip(first["fibers"], second["fibers"]):
         assert np.array_equal(a["points_xyz"], b["points_xyz"])
+
+
+def test_clump_ignore_stress_targets_remain_disjoint_and_schema_valid():
+    cfg = load_yaml("configs/synthetic_sted/clump_ignore_stress_schema08.yaml")
+    cfg["dataset_name"] = "clump_ignore_stress_test"
+    cfg["sample_count"] = 2
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    _, arrays, metadata = build_sample(cfg, 0)
+    assert arrays["real_compatible_clump_mask"].sum() > 0
+    assert arrays["real_compatible_uncertain_ignore_mask"].sum() > 0
+    assert not np.any(
+        arrays["real_compatible_fibrous_mask"]
+        & arrays["real_compatible_clump_mask"]
+    )
+    assert not np.any(
+        arrays["real_compatible_fibrous_mask"]
+        & arrays["real_compatible_uncertain_ignore_mask"]
+    )
+    assert not np.any(
+        arrays["real_compatible_skeleton_mask"]
+        & arrays["real_compatible_clump_mask"]
+    )
+    assert not np.any(
+        arrays["real_compatible_skeleton_mask"]
+        & arrays["real_compatible_uncertain_ignore_mask"]
+    )
+    assert validate_sample_arrays(metadata["sample_id"], arrays, metadata) == []
+
+
+def test_clump_hard_negative_fragments_remain_latent_not_skeleton_targets():
+    cfg = load_yaml("configs/synthetic_sted/clump_ignore_stress_schema08.yaml")
+    cfg["dataset_name"] = "clump_ignore_stress_test"
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    _, arrays, metadata = build_sample(cfg, 1)
+    fragment_ids = set(map(int, arrays["clump_fragment_fiber_ids"]))
+    assert fragment_ids
+    for fiber_id, start, stop in zip(
+        arrays["fiber_ids"],
+        arrays["fiber_point_offsets"][:-1],
+        arrays["fiber_point_offsets"][1:],
+    ):
+        if int(fiber_id) in fragment_ids:
+            assert not np.any(arrays["fiber_supervised_centerline_sample"][start:stop])
+    assert not np.any(arrays["filament_centerline_mask"] & arrays["clump_mask"])
+    assert "clump_fragment_fiber_ids" in metadata["target_roles"]["latent_synthetic_provenance"]
+
+
+def test_clump_ignore_stress_generation_is_condition_blind():
+    base = load_yaml("configs/synthetic_sted/clump_ignore_stress_schema08.yaml")
+    labelled = copy.deepcopy(base)
+    labelled.update(
+        {
+            "culture_id": "PN148",
+            "disease": "AD",
+            "tau_isoform": "4R",
+            "div": 3,
+            "seed_class": "forbidden_metadata",
+        }
+    )
+    first = generate_morphology_geometry(base, 2)
+    second = generate_morphology_geometry(labelled, 2)
+    assert first["parameters"] == second["parameters"]
+    for a, b in zip(first["clumps"], second["clumps"]):
+        assert np.array_equal(a["center_xyz"], b["center_xyz"])
+        assert np.array_equal(a["radius_xyz"], b["radius_xyz"])
+
+
+def test_clump_ignore_stress_v2_large_clumps_schema_valid_and_safe():
+    cfg = load_yaml("configs/synthetic_sted/clump_ignore_stress_v2_schema08.yaml")
+    cfg["dataset_name"] = "clump_ignore_stress_v2_test"
+    cfg["sample_count"] = 1
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    cfg["clumps"]["count_range_by_mode"]["clump_dominated"] = [1, 1]
+    cfg["clumps"]["size_mixture"] = {
+        "very_large": {"weight": 1.0, "radius_range_px": [90, 105]}
+    }
+    _, arrays, metadata = build_sample(cfg, 0)
+    assert arrays["clump_mask"].sum() / arrays["clump_mask"].size > 0.05
+    assert arrays["real_compatible_clump_mask"].sum() > 0
+    assert not np.any(arrays["real_compatible_fibrous_mask"] & arrays["real_compatible_clump_mask"])
+    assert not np.any(arrays["real_compatible_skeleton_mask"] & arrays["real_compatible_clump_mask"])
+    assert validate_sample_arrays(metadata["sample_id"], arrays, metadata) == []
+
+
+def test_clump_ignore_stress_v2_dense_fragments_remain_latent():
+    cfg = load_yaml("configs/synthetic_sted/clump_ignore_stress_v2_schema08.yaml")
+    cfg["dataset_name"] = "clump_ignore_stress_v2_test"
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    _, arrays, metadata = build_sample(cfg, 1)
+    fragment_ids = set(map(int, arrays["clump_fragment_fiber_ids"]))
+    assert len(fragment_ids) >= 20
+    assert "clump_fragment_fiber_ids" in metadata["target_roles"]["latent_synthetic_provenance"]
+    assert "clump_fragment_fiber_ids" not in metadata["target_roles"]["supervised"]
+    assert not np.any(arrays["filament_centerline_mask"] & arrays["clump_mask"])
+    assert not np.any(arrays["real_compatible_skeleton_mask"] & arrays["real_compatible_uncertain_ignore_mask"])
+
+
+def test_clump_patch_diagnostics_report_dominated_128px_crops():
+    shape = (256, 256)
+    arrays = {
+        "real_compatible_semantic_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_fibrous_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_clump_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_uncertain_ignore_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_skeleton_mask": np.zeros(shape, dtype=np.uint8),
+        "render_uint8": np.zeros(shape, dtype=np.uint8),
+    }
+    arrays["real_compatible_clump_mask"][:128, :128] = 1
+    arrays["real_compatible_semantic_mask"][:128, :128] = 3
+    arrays["real_compatible_uncertain_ignore_mask"][128:, :64] = 1
+    arrays["real_compatible_semantic_mask"][128:, :64] = 255
+    metrics = sample_metrics(arrays)
+    assert metrics["max_patch_clump_fraction"] == 1.0
+    assert metrics["patch_fraction_clump_gt_50"] == 0.25
+    assert metrics["patch_fraction_uncertain_gt_10"] == 0.25
+    assert metrics["patch_skeleton_pixels_inside_clump"] == 0
+
+
+def test_clump_ignore_stress_v2_generation_is_condition_blind():
+    base = load_yaml("configs/synthetic_sted/clump_ignore_stress_v2_schema08.yaml")
+    labelled = copy.deepcopy(base)
+    labelled.update(
+        {
+            "culture_id": "PN148",
+            "disease": "AD",
+            "tau_isoform": "4R",
+            "div": 3,
+            "seed_class": "forbidden_metadata",
+        }
+    )
+    first = generate_morphology_geometry(base, 5)
+    second = generate_morphology_geometry(labelled, 5)
+    assert first["parameters"] == second["parameters"]
+    for a, b in zip(first["clumps"], second["clumps"]):
+        assert np.array_equal(a["center_xyz"], b["center_xyz"])
+        assert np.array_equal(a["radius_xyz"], b["radius_xyz"])
+
+
+def test_sample_variants_cycle_without_changing_sample_namespace():
+    cfg = load_yaml("configs/synthetic_sted/training_v1_schema08.yaml")
+    cfg["sample_count"] = 4
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    sample_id, _, normal = build_sample(cfg, 0)
+    _, arrays, stress = build_sample(cfg, 3)
+    assert sample_id == "synthetic_sted_training_v1_schema08_0000"
+    assert normal["generation_config"]["sample_variant"] == "normal"
+    assert stress["generation_config"]["sample_variant"] == "clump_ignore_hard_negative"
+    assert stress["rendering_report"]["scenario_category"] == "clump_ignore_stress"
+    assert arrays["real_compatible_clump_mask"].sum() > 0
 
 
 def test_tile_occupancy_reports_empty_tiles():

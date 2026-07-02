@@ -138,7 +138,7 @@ Distance and source fields are explicitly named:
 
 Visible instance provenance is split into individual visible memberships, all contributing memberships, and `combined_only_visible_mask` for summed-subthreshold visibility.
 
-The shared multiclass and trace-termination vocabulary is defined in `docs/real_annotation_contract.md`. The validated normalized production configuration remains binary. The separate schema 0.7 morphology review emits exploratory individual-filament, bundle, clump, and uncertain/ignore targets with explicit supervised-versus-latent roles, without changing the production configuration.
+The shared multiclass and trace-termination vocabulary is defined in `docs/real_annotation_contract.md`. The validated normalized production configuration remains binary. The separate schema 0.8 morphology review emits apparent visible individual-filament, bundle, clump, and uncertain/ignore targets with explicit source-support, supervised, diagnostic, and real-compatible roles, without changing the production configuration.
 
 Morphology review comparisons are global and condition-blind. Tile occupancy, ridge concentration, local variance, and orientation coherence are threshold-sensitive diagnostics only. They must not be used to fit disease-, isoform-, culture-, or DIV-specific geometry, nor treated as ground-truth length, curvature, endpoint, branch, bundle, or clump distributions.
 

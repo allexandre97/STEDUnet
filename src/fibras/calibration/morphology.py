@@ -56,7 +56,7 @@ GROUND_TRUTH_FIELDS = [
     "supervised_edge_count",
     "latent_edge_count",
     "bundle_width_p50_px",
-    "clump_solidity_p50",
+    "clump_hole_fill_ratio_p50",
     "clump_component_count",
 ]
 
@@ -181,7 +181,7 @@ def ground_truth_counts(arrays: dict[str, np.ndarray]) -> dict[str, str]:
         "supervised_edge_count",
         "latent_edge_count",
         "bundle_width_p50_px",
-        "clump_solidity_p50",
+        "clump_hole_fill_ratio_p50",
         "clump_component_count",
     ]
     if "semantic_class_mask" not in arrays:
@@ -251,7 +251,7 @@ def ground_truth_counts(arrays: dict[str, np.ndarray]) -> dict[str, str]:
                 )
             ),
             "bundle_width_p50_px": numeric(bundle_width_p50(arrays)),
-            "clump_solidity_p50": numeric(clump_solidity_p50(arrays)),
+            "clump_hole_fill_ratio_p50": numeric(clump_hole_fill_ratio_p50(arrays)),
             "clump_component_count": str(
                 int(ndimage.label(arrays.get("clump_mask", np.zeros((1, 1))))[1])
             ),
@@ -269,7 +269,7 @@ def bundle_width_p50(arrays: dict[str, np.ndarray]) -> float:
     return 2.0 * float(np.median(distance[axis.astype(bool)]))
 
 
-def clump_solidity_p50(arrays: dict[str, np.ndarray]) -> float:
+def clump_hole_fill_ratio_p50(arrays: dict[str, np.ndarray]) -> float:
     ids = arrays.get("clump_ids", np.zeros(0))
     values = []
     for clump_id in ids:
@@ -1038,7 +1038,7 @@ def write_morphology_report(
         "# Synthetic STED morphology heterogeneity review",
         "",
         "- calibration_status: `exploratory_unpartitioned`",
-        "- schema: `synthetic_sted_3d_morphology_0.7.0`",
+        "- schema: `synthetic_sted_3d_morphology_0.8.0`",
         "- Morphology generation is condition-blind and broadly randomized.",
         "- Real-image measurements are coarse threshold-sensitive diagnostics, not fitted biological targets.",
         "- Composite foreground scale is sampled deterministically from `1.0–2.0`.",
@@ -1047,7 +1047,7 @@ def write_morphology_report(
         "",
         "## A. Synthetic ground-truth morphology diagnostics",
         "",
-        "| Group | Foreground occupancy | Tile variance | Endpoints | Supervised memberships | Latent memberships | Bundle width | Clump solidity |",
+        "| Group | Foreground occupancy | Tile variance | Endpoints | Supervised memberships | Latent memberships | Bundle width | Clump hole-fill ratio |",
         "|:--|--:|--:|--:|--:|--:|--:|--:|",
     ]
     for group in [
@@ -1063,7 +1063,7 @@ def write_morphology_report(
             f"{value('supervised_membership_count')} | "
             f"{value('latent_geometry_membership_count')} | "
             f"{value('bundle_width_p50_px')} | "
-            f"{value('clump_solidity_p50')} |"
+            f"{value('clump_hole_fill_ratio_p50')} |"
         )
     lines.extend(
         [
@@ -1088,8 +1088,8 @@ def write_morphology_report(
             "",
             "## Class-mask and rendered-signal alignment",
             "",
-            "| Class | Area px | Nonzero mask fraction | Visible mask fraction | Visible signal outside compatible mask | Signal p95 | Ridge p95 |",
-            "|:--|--:|--:|--:|--:|--:|--:|",
+            "| Class | Visible signal outside apparent mask | Visible signal inside apparent mask | Apparent/source area ratio | Apparent mask visible fraction |",
+            "|:--|--:|--:|--:|--:|",
         ]
     )
     for class_name in [
@@ -1101,13 +1101,18 @@ def write_morphology_report(
         summary = alignment_summaries.get(class_name, {})
         value = lambda key: report_value(summary, key)
         lines.append(
-            f"| `{class_name}` | {value('class_area_px')} | "
-            f"{value('fraction_of_class_mask_with_nonzero_signal')} | "
-            f"{value('fraction_of_class_mask_above_visible_threshold')} | "
+            f"| `{class_name}` | "
             f"{value('fraction_of_visible_class_signal_outside_class_mask')} | "
-            f"{value('signal_p95_inside_class')} | "
-            f"{value('ridge_response_p95_inside_class')} |"
+            f"{value('fraction_of_visible_class_signal_inside_apparent_mask')} | "
+            f"{value('apparent_to_source_area_ratio')} | "
+            f"{value('fraction_of_apparent_mask_with_visible_class_signal')} |"
         )
+    lines.extend(
+        [
+            "",
+            "The uncertain-transition row is not evaluated as scene-wide signal spill.",
+        ]
+    )
     lines.extend(
         [
             "",

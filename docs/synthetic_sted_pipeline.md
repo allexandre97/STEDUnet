@@ -119,7 +119,7 @@ The authoritative visibility threshold is `optical_model.visible_signal_threshol
 
 PSF component weights use `weights_sum_to_one`. Core-plus-halo weights must be finite, nonnegative, have positive total, and sum to one without implicit normalization.
 
-The shared real-annotation vocabulary is defined in `docs/real_annotation_contract.md`. The normalized production path remains schema 0.5 and binary. The separate exploratory morphology path uses schema `synthetic_sted_3d_morphology_0.7.0` with background, individual-filament, bundle, clump, and uncertain/ignore classes.
+The shared real-annotation vocabulary is defined in `docs/real_annotation_contract.md`. The normalized production path remains schema 0.5 and binary. The separate exploratory morphology path uses schema `synthetic_sted_3d_morphology_0.8.0` with apparent visible background, individual-filament, bundle, clump, and uncertain/ignore masks plus separate latent source-support masks.
 
 Generate the normalized 3D review set with:
 
@@ -174,7 +174,7 @@ python scripts/build_morphology_review.py \
   --diagnostics-out calibration_artifacts/morphology_semantic_review
 ```
 
-The multiclass `semantic_class_mask` uses values `0`, `1`, `2`, `3`, and `255`. `semantic_mask` is the compatibility union of valid foreground classes 1–3. Schema 0.7 exposes `supervised_membership_*` and `latent_geometry_membership_*` separately, plus numeric graph supervision and boundary flags. Bundle axes are bundle-level targets, not filament centerlines. Hidden bundle children and clump fragments remain synthetic-only latent geometry. Structural targets do not depend on the exploratory composite foreground scale, sampled from 1.0–2.0 for review examples.
+The multiclass `semantic_class_mask` uses values `0`, `1`, `2`, `3`, and `255`. `semantic_mask` is the compatibility union of valid foreground classes 1–3. Schema 0.8 exposes apparent visible supervised masks, separate `*_source_support_mask` latent provenance masks, `supervised_membership_*` and `latent_geometry_membership_*` separately, plus numeric graph supervision and boundary flags. Bundle axes are bundle-level targets, not filament centerlines. Hidden bundle children and clump fragments remain synthetic-only latent geometry.
 
 Boundary handling inserts the first analytic volume intersection and terminates the curve; it never flattens a sequence of points onto an edge. Only `valid_endpoint` trace ends enter `endpoint_map`. Resolved bundle-child segments may contribute filament crossings, while unresolved and transition segments remain crossing-ineligible.
 

@@ -154,7 +154,7 @@ targets:
   clump_max_hole_area_px: 96
   min_bundle_width_px: 4.5
   min_clump_area_px: 16
-  min_clump_solidity: 0.2
+  min_clump_hole_fill_ratio: 0.2
   max_clump_dark_fraction: 0.2
   max_clump_components_per_instance: 4
   signal_alignment_acceptance:

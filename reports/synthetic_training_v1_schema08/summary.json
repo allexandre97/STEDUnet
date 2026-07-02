@@ -1,0 +1,159 @@
+{
+  "composite": {
+    "dataset_dir": "examples/sted_blank_composites_training_v1_schema08",
+    "distribution": {
+      "clump_area_fraction": {
+        "max": 0.05100727081298828,
+        "mean": 0.005958868563175202,
+        "p50": 0.0023174285888671875,
+        "p95": 0.027702093124389628
+      },
+      "clump_ignore_stress_sample_fraction": 0.25,
+      "clump_sample_fraction": 0.6890625,
+      "largest_clump_component_fraction": {
+        "max": 0.03365039825439453,
+        "mean": 0.0032068416476249695,
+        "p50": 0.0013093948364257812,
+        "p95": 0.014740037918090816
+      },
+      "largest_clump_gt_10_fraction": 0.0,
+      "largest_clump_gt_5_fraction": 0.0,
+      "no_clump_sample_fraction": 0.3109375,
+      "uncertain_ignore_fraction": {
+        "max": 0.027706146240234375,
+        "mean": 0.0036237746477127074,
+        "p50": 0.002201557159423828,
+        "p95": 0.013228225708007812
+      }
+    },
+    "max_leakage": {
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0
+    },
+    "mean": {
+      "background_region_intensity_p50": 3.0609375,
+      "background_region_intensity_p95": 10.825,
+      "background_region_intensity_p99": 14.973343749999913,
+      "clump_area_fraction": 0.005958868563175202,
+      "clump_high_signal_fraction": 0.6186237061475749,
+      "clump_region_intensity_p50": 41.57265625,
+      "clump_region_intensity_p95": 119.28726562499999,
+      "clump_region_intensity_p99": 142.87714062499998,
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "intensity_p50": 3.2703125,
+      "intensity_p95": 12.7453125,
+      "intensity_p99": 44.852734375,
+      "largest_clump_component_fraction": 0.0032068416476249695,
+      "max_patch_clump_fraction": 0.1462346076965332,
+      "patch_fraction_clump_gt_25": 0.0071533203125,
+      "patch_fraction_clump_gt_50": 0.0014892578125,
+      "patch_fraction_uncertain_gt_10": 0.006396484375,
+      "patch_skeleton_pixels_inside_clump": 0.0,
+      "patch_skeleton_pixels_inside_uncertain_ignore": 0.0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0,
+      "uncertain_ignore_fraction": 0.0036237746477127074,
+      "uncertain_ignore_high_signal_fraction": 0.35213719139863436,
+      "uncertain_ignore_region_intensity_p50": 12.3578125,
+      "uncertain_ignore_region_intensity_p95": 68.56031249999997,
+      "uncertain_ignore_region_intensity_p99": 114.635703125
+    },
+    "sample_count": 640,
+    "sample_variant_counts": {
+      "not_reported": 640
+    },
+    "scenario_category_counts": {
+      "clump_ignore_stress": 160,
+      "realism_calibration": 480
+    },
+    "scenario_counts": {
+      "bundle_dominated": 81,
+      "clump_dominated": 81,
+      "clustered_filament_network": 81,
+      "isolated_filaments": 81,
+      "mixed_morphology": 316
+    }
+  },
+  "synthetic": {
+    "dataset_dir": "examples/synthetic_sted_training_v1_schema08",
+    "distribution": {
+      "clump_area_fraction": {
+        "max": 0.05100727081298828,
+        "mean": 0.005958868563175202,
+        "p50": 0.0023174285888671875,
+        "p95": 0.027702093124389628
+      },
+      "clump_ignore_stress_sample_fraction": 0.25,
+      "clump_sample_fraction": 0.6890625,
+      "largest_clump_component_fraction": {
+        "max": 0.03365039825439453,
+        "mean": 0.0032068416476249695,
+        "p50": 0.0013093948364257812,
+        "p95": 0.014740037918090816
+      },
+      "largest_clump_gt_10_fraction": 0.0,
+      "largest_clump_gt_5_fraction": 0.0,
+      "no_clump_sample_fraction": 0.3109375,
+      "uncertain_ignore_fraction": {
+        "max": 0.027706146240234375,
+        "mean": 0.0036237746477127074,
+        "p50": 0.002201557159423828,
+        "p95": 0.013228225708007812
+      }
+    },
+    "max_leakage": {
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0
+    },
+    "mean": {
+      "background_region_intensity_p50": 4.0,
+      "background_region_intensity_p95": 4.0,
+      "background_region_intensity_p99": 4.784375,
+      "clump_area_fraction": 0.005958868563175202,
+      "clump_high_signal_fraction": 0.6814990672006418,
+      "clump_region_intensity_p50": 26.41875,
+      "clump_region_intensity_p95": 96.35460937499998,
+      "clump_region_intensity_p99": 117.54660937499997,
+      "fibrous_tau_pixels_inside_clump": 0,
+      "fibrous_tau_pixels_inside_uncertain_ignore": 0,
+      "intensity_p50": 4.0,
+      "intensity_p95": 4.8546875,
+      "intensity_p99": 27.10703125,
+      "largest_clump_component_fraction": 0.0032068416476249695,
+      "max_patch_clump_fraction": 0.1462346076965332,
+      "patch_fraction_clump_gt_25": 0.0071533203125,
+      "patch_fraction_clump_gt_50": 0.0014892578125,
+      "patch_fraction_uncertain_gt_10": 0.006396484375,
+      "patch_skeleton_pixels_inside_clump": 0.0,
+      "patch_skeleton_pixels_inside_uncertain_ignore": 0.0,
+      "skeleton_pixels_inside_clump": 0,
+      "skeleton_pixels_inside_uncertain_ignore": 0,
+      "uncertain_ignore_fraction": 0.0036237746477127074,
+      "uncertain_ignore_high_signal_fraction": 0.9717473903043835,
+      "uncertain_ignore_region_intensity_p50": 9.053125,
+      "uncertain_ignore_region_intensity_p95": 43.01632812499999,
+      "uncertain_ignore_region_intensity_p99": 88.39898437499998
+    },
+    "sample_count": 640,
+    "sample_variant_counts": {
+      "clump_ignore_hard_negative": 160,
+      "normal": 480
+    },
+    "scenario_category_counts": {
+      "clump_ignore_stress": 160,
+      "realism_calibration": 480
+    },
+    "scenario_counts": {
+      "bundle_dominated": 81,
+      "clump_dominated": 81,
+      "clustered_filament_network": 81,
+      "isolated_filaments": 81,
+      "mixed_morphology": 316
+    }
+  }
+}

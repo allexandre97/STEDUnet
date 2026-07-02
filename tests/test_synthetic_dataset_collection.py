@@ -48,6 +48,7 @@ def test_collection_validates_global_ids_parent_hash_and_inheritance(tmp_path):
         },
     )
     assert validate_dataset_collection([parent_dir, composite_dir]) == []
+    assert validate_dataset_collection([parent_dir, composite_dir], num_workers=2) == []
     metadata_path = composite_dir / "blank_composite_3d_realism_0000.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["source_synthetic_artifact_hash"] = "bad"
@@ -93,6 +94,47 @@ def test_collection_rejects_global_id_collisions_and_modified_structures(tmp_pat
         "global sample_id collision" in error
         for error in validate_dataset_collection([first, second])
     )
+
+
+def test_collection_allows_clump_ignore_stress_composite_parent(tmp_path):
+    parent_dir = tmp_path / "parent"
+    composite_dir = tmp_path / "composite"
+    write_sample(
+        parent_dir,
+        "synthetic_sted_clump_ignore_stress_schema08_0000",
+        {
+            "projection_mask": np.ones((2, 2), dtype=np.uint8),
+            "render_float": np.ones((2, 2), dtype=np.float32),
+            "render_uint8": np.ones((2, 2), dtype=np.uint8),
+        },
+        {
+            "generation_config": {"dataset_name": "synthetic_sted_clump_ignore_stress_schema08"},
+            "scenario_category": "clump_ignore_stress",
+            "dataset_schema_version": DATASET_SCHEMA_VERSION_3D,
+        },
+    )
+    parent_row = manifest_row(parent_dir)
+    write_sample(
+        composite_dir,
+        "sted_blank_composites_clump_ignore_stress_schema08_0000",
+        {
+            "projection_mask": np.ones((2, 2), dtype=np.uint8),
+            "render_float": np.full((2, 2), 2, dtype=np.float32),
+            "render_uint8": np.full((2, 2), 2, dtype=np.uint8),
+            "blank_float": np.ones((2, 2), dtype=np.float32),
+        },
+        {
+            "configuration": {
+                "compositing": {
+                    "composite_dataset_name": "sted_blank_composites_clump_ignore_stress_schema08"
+                }
+            },
+            "dataset_schema_version": DATASET_SCHEMA_VERSION_3D,
+            "parent_synthetic_sample_id": "synthetic_sted_clump_ignore_stress_schema08_0000",
+            "source_synthetic_artifact_hash": parent_row["npz_sha256"],
+        },
+    )
+    assert validate_dataset_collection([parent_dir, composite_dir]) == []
 
 
 def write_sample(directory, sample_id, arrays, metadata):

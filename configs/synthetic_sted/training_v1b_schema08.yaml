@@ -1,0 +1,422 @@
+dataset_name: synthetic_sted_training_v1b_schema08
+generator_mode: morphology_scene_3d
+scenario_category: realism_calibration
+sample_count: 640
+split: training
+calibration_status: procedural_unmatched
+calibration_data_status: exploratory_unpartitioned
+source_roots:
+  sted_fiber_data: /ssd/STED_dataset/data
+  sted_blank_data: /ssd/STED_dataset/bigblank
+statistics:
+  local_block_size_px: 32
+  low_frequency_sigma_px: 32.0
+  spectrum_size_px: 256
+  spectrum_bins: 32
+proxies:
+  threshold_mad_k: 6.0
+  sensitivity_threshold_mad_k:
+  - 4.0
+  - 8.0
+  ridge_percentile: 95
+  min_component_area_px: 8
+  crossing_component_area_px: 20
+geometry:
+  image_shape:
+  - 1024
+  - 1024
+  volume_depth_px: 96.0
+  focal_plane_z_px: 48.0
+  base_seed: 91001
+  step_length_px: 6.0
+  contour_length_range_px:
+  - 120.0
+  - 620.0
+  persistence_length_range_px:
+  - 55.0
+  - 320.0
+  spline_samples_per_segment: 6
+  arc_length_sampling_interval_px: 1.0
+  boundary_mode: reflect
+  fluorophore:
+    base_amplitude_range:
+    - 95.0
+    - 145.0
+    variation_scale_samples: 48.0
+    variation_amplitude: 0.3
+    gap_probability: 0.2
+    gap_length_range_px:
+    - 8.0
+    - 35.0
+    gap_residual_fraction: 0.05
+    max_gaps_per_fiber: 3
+    punctate_probability: 0.1
+    punctate_max_count: 3
+    punctate_sigma_samples: 3.0
+    punctate_gain: 1.2
+    radius_range_px:
+    - 0.6
+    - 1.1
+    radius_variation_scale_samples: 64.0
+    radius_variation_amplitude: 0.15
+  width_calibration:
+    angle_degrees: 0.0
+    length_px: 720.0
+scene_morphology:
+  review_modes:
+  - isolated_filaments
+  - isolated_filaments
+  - isolated_filaments
+  - isolated_filaments
+  - clustered_filament_network
+  - clustered_filament_network
+  - clustered_filament_network
+  - clustered_filament_network
+  - bundle_dominated
+  - bundle_dominated
+  - bundle_dominated
+  - bundle_dominated
+  - clump_dominated
+  - clump_dominated
+  - clump_dominated
+  - clump_dominated
+  - mixed_morphology
+  - mixed_morphology
+  - mixed_morphology
+  - mixed_morphology
+  - mixed_morphology
+  - mixed_morphology
+  - mixed_morphology
+  - mixed_morphology
+  cluster_count_range:
+  - 1
+  - 4
+  cluster_radius_range_px:
+  - 90.0
+  - 260.0
+  cluster_anisotropy_range:
+  - 0.45
+  - 1.0
+  empty_area_fraction_range:
+  - 0.05
+  - 0.35
+  local_density_multiplier_range:
+  - 1.2
+  - 3.5
+  alignment_strength_range:
+  - 0.0
+  - 0.9
+  orientation_domain_size_range_px:
+  - 100.0
+  - 320.0
+individual_filaments:
+  contour_length_range_px:
+  - 100.0
+  - 650.0
+  persistence_length_range_px:
+  - 50.0
+  - 340.0
+  count_range_by_mode:
+    isolated_filaments:
+    - 4
+    - 7
+    clustered_filament_network:
+    - 10
+    - 16
+    bundle_dominated:
+    - 3
+    - 7
+    clump_dominated:
+    - 3
+    - 7
+    mixed_morphology:
+    - 7
+    - 13
+bundles:
+  enabled: true
+  count_range_by_mode:
+    isolated_filaments:
+    - 0
+    - 0
+    clustered_filament_network:
+    - 0
+    - 0
+    bundle_dominated:
+    - 2
+    - 4
+    clump_dominated:
+    - 0
+    - 1
+    mixed_morphology:
+    - 1
+    - 3
+  child_filament_count_range:
+  - 3
+  - 7
+  bundle_length_range_px:
+  - 180.0
+  - 520.0
+  bundle_radius_range_px:
+  - 4.0
+  - 10.0
+  persistence_length_range_px:
+  - 180.0
+  - 520.0
+  child_offset_correlation_length_px: 30.0
+  twist_rate_range:
+  - -0.03
+  - 0.03
+  convergence_probability: 0.35
+  divergence_probability: 0.35
+  partial_resolution_probability: 0.75
+  bundle_axis_enabled: true
+clumps:
+  enabled: true
+  count_range_by_mode:
+    isolated_filaments:
+    - 0
+    - 0
+    clustered_filament_network:
+    - 0
+    - 0
+    bundle_dominated:
+    - 0
+    - 1
+    clump_dominated:
+    - 2
+    - 4
+    mixed_morphology:
+    - 1
+    - 3
+  radius_range_px:
+  - 18.0
+  - 55.0
+  aspect_ratio_range:
+  - 0.55
+  - 1.0
+  fragment_count_range:
+  - 12
+  - 28
+  fragment_length_range_px:
+  - 10.0
+  - 42.0
+  internal_density_range:
+  - 0.5
+  - 1.0
+  irregularity_range:
+  - 0.2
+  - 0.7
+  depth_extent_range:
+  - 8.0
+  - 28.0
+  edge_diffuseness_range:
+  - 0.8
+  - 1.5
+intensity_variation:
+  variation_scale_samples: 48.0
+  variation_amplitude: 0.3
+targets:
+  centerline_radius_px: 0.75
+  endpoint_radius_px: 3.0
+  junction_radius_px: 3.0
+  crossing_radius_px: 3.0
+  bundle_axis_radius_px: 1.0
+  transition_radius_px: 3.0
+  mark_transitions_uncertain: true
+  bundle_closing_iterations: 2
+  bundle_max_fill_distance_px: 5.0
+  bundle_max_hole_area_px: 128
+  clump_closing_iterations: 4
+  clump_max_fill_distance_px: 6.0
+  clump_max_hole_area_px: 96
+  min_bundle_width_px: 4.5
+  min_clump_area_px: 16
+  min_clump_hole_fill_ratio: 0.2
+  max_clump_dark_fraction: 0.2
+  max_clump_components_per_instance: 4
+  signal_alignment_acceptance:
+    min_nonzero_fraction: 0.05
+    max_visible_signal_outside_fraction: 0.75
+  near_coplanar_depth_px: 8.0
+  orientation_consensus_threshold: 0.95
+  orientation_field_enabled: true
+  distance_transform_enabled: true
+optical_model:
+  psf_mode: core_plus_halo
+  psf_normalization: unit_integral
+  sigma_xy_0_px: 2.123
+  sigma_z_px: 24.0
+  defocus_broadening: 0.025
+  core_weight: 0.92
+  core_sigma_xy_0_px: 2.123
+  core_sigma_z_px: 24.0
+  core_defocus_broadening: 0.025
+  halo_weight: 0.08
+  halo_sigma_xy_0_px: 6.0
+  halo_sigma_z_px: 48.0
+  halo_defocus_broadening: 0.055
+  kernel_truncation_radius: 3.0
+  focal_depth_range_px: 6.0
+  visible_signal_threshold: 3.0
+output_mapping:
+  base_seed: 92001
+  foreground_scale: 1.0
+  background_level: 4.0
+  background_noise_std: 0.0
+  uint8_min: 0.0
+  uint8_max: 255.0
+  clipping_behavior: clip_to_uint8_range
+  saturation_warning_threshold: 0.001
+real_blank_rendering:
+  base_seed: 92001
+  signal_dependent_perturbation_scale: 0.0
+  uint8_min: 0.0
+  uint8_max: 255.0
+compositing:
+  base_seed: 93001
+  sample_count: 640
+  synthetic_split: synthetic_background_train
+  composite_dataset_name: sted_blank_composites_training_v1b_schema08
+  blank_pool_role: synthetic_background_train
+  blank_pool_manifest: data_manifests/sted_blank_pools.csv
+  parent_synthetic_dir: examples/synthetic_sted_training_v1b_schema08
+  crop_mode: full_image
+  blank_scale: 1.0
+  foreground_scale_range:
+  - 0.9
+  - 2.4
+  allow_blank_reuse_within_pool: true
+  allow_blank_reuse_across_splits: false
+width_calibration:
+  target_fwhm_px: 5.0
+  min_allowed_fwhm_px: 4.5
+  max_allowed_fwhm_px: 5.5
+  measurement_method: transverse_profile_fwhm
+  test_orientations_degrees:
+  - 0
+  - 15
+  - 30
+  - 45
+  - 60
+  - 75
+  - 90
+  test_subpixel_offsets:
+  - - 0.0
+    - 0.0
+  - - 0.25
+    - 0.25
+  - - 0.5
+    - 0.1
+sample_variants:
+  sequence:
+  - normal
+  - normal
+  - normal
+  - clump_ignore_hard_negative
+  definitions:
+    normal: {}
+    clump_ignore_hard_negative:
+      scenario_category: clump_ignore_stress
+      scene_morphology:
+        review_modes:
+        - clump_dominated
+        - clump_dominated
+        - clump_dominated
+        - clump_dominated
+        - clump_dominated
+        - clump_dominated
+        - mixed_morphology
+        - mixed_morphology
+        cluster_count_range:
+        - 1
+        - 3
+      individual_filaments:
+        count_range_by_mode:
+          clump_dominated:
+          - 1
+          - 4
+          mixed_morphology:
+          - 5
+          - 9
+      bundles:
+        enabled: false
+      clumps:
+        enabled: true
+        count_range_by_mode:
+          clump_dominated:
+          - 1
+          - 3
+          mixed_morphology:
+          - 1
+          - 2
+        radius_range_px:
+        - 70.0
+        - 280.0
+        size_mixture:
+          small:
+            weight: 0.1
+            radius_range_px:
+            - 28.0
+            - 65.0
+          medium:
+            weight: 0.2
+            radius_range_px:
+            - 65.0
+            - 125.0
+          large:
+            weight: 0.45
+            radius_range_px:
+            - 125.0
+            - 245.0
+          very_large:
+            weight: 0.25
+            radius_range_px:
+            - 245.0
+            - 370.0
+        aspect_ratio_range:
+        - 0.6
+        - 1.0
+        fragment_count_range:
+        - 42
+        - 115
+        fragment_count_per_radius_px:
+        - 0.24
+        - 0.58
+        fragment_length_range_px:
+        - 28.0
+        - 165.0
+        internal_density_range:
+        - 0.7
+        - 1.25
+        irregularity_range:
+        - 0.28
+        - 0.85
+        depth_extent_range:
+        - 8.0
+        - 30.0
+        edge_diffuseness_range:
+        - 1.3
+        - 2.6
+        fragment_amplitude_multiplier_range:
+        - 1.25
+        - 3.2
+        fragment_radius_multiplier_range:
+        - 1.1
+        - 2.2
+        fragment_gap_probability: 0.055
+        fragment_punctate_probability: 0.35
+        fragment_variation_amplitude: 0.62
+        fragment_radius_variation_amplitude: 0.4
+        fragment_alignment_probability: 0.72
+        fragment_alignment_bundle_count: 7
+        fragment_alignment_strength: 0.82
+        fragment_alignment_jitter_rad: 0.36
+      targets:
+        scenario_category: clump_ignore_stress
+        clump_uncertain_halo_px: 5.0
+      optical_model:
+        clump_texture_gain: 1.15
+        clump_texture_narrow_sigma_px: 1.0
+        clump_texture_broad_sigma_px: 6.0
+      output_mapping:
+        foreground_scale: 1.25
