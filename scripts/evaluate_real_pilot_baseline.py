@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
             patch_size=args.patch_size,
             batch_size=args.batch_size,
             overlap=args.tile_overlap,
+            uncertainty_gating=args.uncertainty_gating,
+            uncertainty_threshold=args.uncertainty_threshold,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -51,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
         predictions["skeleton_probability"],
         skeleton_threshold=args.skeleton_threshold,
     )
+    if "uncertainty_probability" in predictions:
+        add_uncertainty_probability_metrics(metrics, sample["real_semantic_mask"], predictions["uncertainty_probability"])
     metrics["metadata"] = {
         "checkpoint": str(checkpoint_path),
         "run_dir": str(args.run_dir) if args.run_dir else None,
@@ -62,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         "tile_overlap": int(args.tile_overlap),
         "device": str(args.device),
         "semantic_threshold": args.semantic_threshold,
+        "uncertainty_gating": args.uncertainty_gating,
+        "uncertainty_threshold": float(args.uncertainty_threshold),
     }
     write_outputs(args.out, args.image, sample, predictions, metrics)
     print(f"wrote outputs under {args.out}")
@@ -82,6 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skeleton-threshold", type=float, default=0.75)
     parser.add_argument("--semantic-threshold", type=float)
     parser.add_argument("--overlap", "--tile-overlap", dest="tile_overlap", type=int, default=32)
+    parser.add_argument(
+        "--uncertainty-gating",
+        choices=["none", "suppress_fibrous", "suppress_skeleton", "suppress_both"],
+        default="none",
+    )
+    parser.add_argument("--uncertainty-threshold", type=float, default=0.5)
     return parser
 
 
@@ -94,16 +106,34 @@ def import_torch():
 
 
 def load_model(checkpoint: Path | None, run_dir: Path | None, device_name: str, torch: Any) -> tuple[Any, Path, Any]:
-    from fibras.training.schema08_baseline import SmallUNet, choose_device
+    from fibras.training.schema08_baseline import ContextUNet, SmallUNet, choose_device, parse_dilations, strip_module_prefix
 
     device = choose_device(device_name)
     checkpoint_path = resolve_checkpoint_path(checkpoint, run_dir)
     payload = torch.load(checkpoint_path, map_location=device)
     state_dict = payload.get("model_state_dict", payload) if isinstance(payload, dict) else payload
-    model = SmallUNet().to(device)
+    state_dict = strip_module_prefix(state_dict)
+    config = payload.get("config", {}) if isinstance(payload, dict) else {}
+    has_uncertainty = checkpoint_has_uncertainty_head(payload, state_dict)
+    if isinstance(config, dict) and config.get("model_variant") == "context_unet":
+        model = ContextUNet(
+            uncertainty_head=has_uncertainty,
+            context_module=config.get("context_module", "none"),
+            aspp_dilations=parse_dilations(config.get("aspp_dilations", "1,2,4,8")),
+        ).to(device)
+    else:
+        model = SmallUNet(uncertainty_head=has_uncertainty).to(device)
     model.load_state_dict(state_dict)
     model.eval()
     return model, checkpoint_path, device
+
+
+def checkpoint_has_uncertainty_head(payload: Any, state_dict: dict[str, Any]) -> bool:
+    if isinstance(payload, dict):
+        config = payload.get("config")
+        if isinstance(config, dict) and bool(config.get("enable_uncertainty_head")):
+            return True
+    return any(key.startswith("uncertainty_head.") or key.startswith("module.uncertainty_head.") for key in state_dict)
 
 
 def resolve_checkpoint_path(checkpoint: Path | None, run_dir: Path | None) -> Path:
@@ -140,6 +170,8 @@ def run_tiled_inference(
     patch_size: int = 128,
     batch_size: int = 4,
     overlap: int = 32,
+    uncertainty_gating: str = "none",
+    uncertainty_threshold: float = 0.5,
 ) -> dict[str, np.ndarray]:
     image_f = normalize_like_training(image)
     h, w = image_f.shape
@@ -149,6 +181,8 @@ def run_tiled_inference(
     starts = list(tile_origins(padded.shape, patch_size, overlap))
     semantic_logits = np.zeros((3, *padded.shape), dtype=np.float32)
     skeleton_logits = np.zeros(padded.shape, dtype=np.float32)
+    uncertainty_logits = np.zeros(padded.shape, dtype=np.float32)
+    has_uncertainty = False
     weights = np.zeros(padded.shape, dtype=np.float32)
     window = blend_window(patch_size)
 
@@ -160,21 +194,38 @@ def run_tiled_inference(
             outputs = model(tensor)
             sem = outputs["semantic_logits"].detach().cpu().numpy()
             skel = outputs["skeleton_logits"][:, 0].detach().cpu().numpy()
+            uncertain = outputs.get("uncertainty_logits")
+            if uncertain is not None:
+                has_uncertainty = True
+                uncertain = uncertain[:, 0].detach().cpu().numpy()
             for i, (y, x) in enumerate(batch_starts):
                 semantic_logits[:, y : y + patch_size, x : x + patch_size] += sem[i] * window
                 skeleton_logits[y : y + patch_size, x : x + patch_size] += skel[i] * window
+                if uncertain is not None:
+                    uncertainty_logits[y : y + patch_size, x : x + patch_size] += uncertain[i] * window
                 weights[y : y + patch_size, x : x + patch_size] += window
 
     weights = np.maximum(weights, 1e-6)
     semantic_logits = semantic_logits[:, :h, :w] / weights[:h, :w]
     skeleton_logits = skeleton_logits[:h, :w] / weights[:h, :w]
+    uncertainty_probability = None
+    if has_uncertainty:
+        uncertainty_probability = sigmoid(uncertainty_logits[:h, :w] / weights[:h, :w]).astype(np.float32)
     semantic_prob = softmax_channel_first(semantic_logits)
+    skeleton_probability = sigmoid(skeleton_logits).astype(np.float32)
+    if uncertainty_gating != "none":
+        if uncertainty_probability is None:
+            raise ValueError("uncertainty gating requires a checkpoint with an uncertainty head")
+        gate = uncertainty_probability > float(uncertainty_threshold)
+        if uncertainty_gating in {"suppress_fibrous", "suppress_both"}:
+            semantic_prob[1, gate] = 0.0
+        if uncertainty_gating in {"suppress_skeleton", "suppress_both"}:
+            skeleton_probability[gate] = 0.0
     class_index = semantic_prob.argmax(axis=0).astype(np.uint8)
     semantic_class_map = np.zeros((h, w), dtype=np.uint8)
     semantic_class_map[class_index == 1] = 1
     semantic_class_map[class_index == 2] = 3
-    skeleton_probability = sigmoid(skeleton_logits).astype(np.float32)
-    return {
+    predictions = {
         "semantic_class_map": semantic_class_map,
         "fibrous_probability": semantic_prob[1].astype(np.float32),
         "clump_probability": semantic_prob[2].astype(np.float32),
@@ -182,6 +233,9 @@ def run_tiled_inference(
         "skeleton_mask_0_5": (skeleton_probability > 0.5).astype(np.uint8),
         "skeleton_mask_0_75": (skeleton_probability > 0.75).astype(np.uint8),
     }
+    if uncertainty_probability is not None:
+        predictions["uncertainty_probability"] = uncertainty_probability
+    return predictions
 
 
 def tile_origins(shape: tuple[int, int], patch_size: int, overlap: int) -> Iterable[tuple[int, int]]:
@@ -281,6 +335,27 @@ def compute_real_pilot_metrics(
         for threshold in (0.5, 0.75, 0.85)
     }
     return metrics
+
+
+def add_uncertainty_probability_metrics(metrics: dict[str, Any], target_semantic: np.ndarray, probability: np.ndarray) -> None:
+    metrics["uncertainty_probability_by_target_region"] = probability_summaries_by_target_region(
+        target_semantic,
+        probability,
+    )
+
+
+def probability_summaries_by_target_region(target_semantic: np.ndarray, probability: np.ndarray) -> dict[str, Any]:
+    return {
+        name: probability_summary(probability[mask])
+        for name, mask in target_region_masks(target_semantic).items()
+    }
+
+
+def probability_summary(values: np.ndarray) -> dict[str, float | str]:
+    if values.size == 0:
+        return {"mean": NOT_APPLICABLE, "p95": NOT_APPLICABLE}
+    arr = values.astype(np.float32, copy=False)
+    return {"mean": float(np.mean(arr)), "p95": float(np.percentile(arr, 95))}
 
 
 def target_region_masks(target_semantic: np.ndarray) -> dict[str, np.ndarray]:
@@ -391,15 +466,7 @@ def write_outputs(
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = safe_stem(image_path)
-    np.savez_compressed(
-        out_dir / f"{stem}_predictions.npz",
-        semantic_class_map=predictions["semantic_class_map"],
-        fibrous_probability=predictions["fibrous_probability"],
-        clump_probability=predictions["clump_probability"],
-        skeleton_probability=predictions["skeleton_probability"],
-        skeleton_mask_0_5=predictions["skeleton_mask_0_5"],
-        skeleton_mask_0_75=predictions["skeleton_mask_0_75"],
-    )
+    np.savez_compressed(out_dir / f"{stem}_predictions.npz", **predictions)
     (out_dir / f"{stem}_metrics.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

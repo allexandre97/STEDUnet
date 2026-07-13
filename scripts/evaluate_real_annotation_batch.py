@@ -24,6 +24,7 @@ from scripts.analyze_real_pilot_errors import (
     skeleton_error_analysis,
 )
 from scripts.evaluate_real_pilot_baseline import (
+    add_uncertainty_probability_metrics,
     compute_real_pilot_metrics,
     import_torch,
     load_model,
@@ -122,14 +123,44 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--skeleton-threshold", type=float, default=0.75)
     parser.add_argument("--overlap", "--tile-overlap", dest="tile_overlap", type=int, default=32)
+    parser.add_argument(
+        "--uncertainty-gating",
+        choices=["none", "suppress_fibrous", "suppress_skeleton", "suppress_both"],
+        default="none",
+    )
+    parser.add_argument("--uncertainty-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--include-image",
+        action="append",
+        default=[],
+        help="Evaluate only matching sample_id values. May be repeated or comma-separated.",
+    )
     return parser
 
 
 def records_from_args(args: argparse.Namespace) -> list[dict[str, str]]:
     if args.annotation_dir is not None:
-        return discover_annotation_triplets(args.annotation_dir)
-    assert args.manifest is not None
-    return read_annotation_manifest(args.manifest)
+        records = discover_annotation_triplets(args.annotation_dir)
+    else:
+        assert args.manifest is not None
+        records = read_annotation_manifest(args.manifest)
+    return filter_records(records, parse_include_images(args.include_image))
+
+
+def parse_include_images(values: list[str]) -> list[str]:
+    return [item.strip() for value in values for item in value.split(",") if item.strip()]
+
+
+def filter_records(records: list[dict[str, str]], include_images: list[str]) -> list[dict[str, str]]:
+    if not include_images:
+        return records
+    wanted = set(include_images)
+    selected = [record for record in records if record["sample_id"] in wanted]
+    missing = sorted(wanted - {record["sample_id"] for record in selected})
+    if missing:
+        available = ", ".join(record["sample_id"] for record in records)
+        raise ValueError(f"include-image sample_id(s) not found: {missing}. Available sample_id values: {available}")
+    return selected
 
 
 def discover_annotation_triplets(annotation_dir: Path) -> list[dict[str, str]]:
@@ -220,6 +251,8 @@ def evaluate_record(
         patch_size=args.patch_size,
         batch_size=args.batch_size,
         overlap=args.tile_overlap,
+        uncertainty_gating=args.uncertainty_gating,
+        uncertainty_threshold=args.uncertainty_threshold,
     )
     metrics = compute_real_pilot_metrics(
         sample["real_semantic_mask"],
@@ -228,6 +261,8 @@ def evaluate_record(
         predictions["skeleton_probability"],
         skeleton_threshold=args.skeleton_threshold,
     )
+    if "uncertainty_probability" in predictions:
+        add_uncertainty_probability_metrics(metrics, sample["real_semantic_mask"], predictions["uncertainty_probability"])
     sample_dir = out_root / record["sample_id"]
     metrics["metadata"] = {
         "sample_id": record["sample_id"],
@@ -242,6 +277,8 @@ def evaluate_record(
         "batch_size": int(args.batch_size),
         "tile_overlap": int(args.tile_overlap),
         "device": str(device),
+        "uncertainty_gating": args.uncertainty_gating,
+        "uncertainty_threshold": float(args.uncertainty_threshold),
     }
     write_outputs(sample_dir, Path(record["image_path"]), sample, predictions, metrics)
     standardize_sample_outputs(sample_dir, Path(record["image_path"]))

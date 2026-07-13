@@ -8,6 +8,8 @@ from scripts.evaluate_real_annotation_batch import (
     aggregate_rows,
     aggregate_sample,
     discover_annotation_triplets,
+    filter_records,
+    parse_include_images,
     read_annotation_manifest,
 )
 
@@ -60,6 +62,33 @@ def test_manifest_parsing_resolves_relative_paths(tmp_path):
             "expected_category": "early_fibrous",
         }
     ]
+
+
+def test_include_image_filter_selects_requested_sample_ids():
+    records = [
+        {"sample_id": "PN001", "image_path": "a"},
+        {"sample_id": "PN002", "image_path": "b"},
+        {"sample_id": "PN003", "image_path": "c"},
+    ]
+
+    include = parse_include_images(["PN001,PN003"])
+    selected = filter_records(records, include)
+
+    assert [record["sample_id"] for record in selected] == ["PN001", "PN003"]
+
+
+def test_include_image_filter_reports_available_ids():
+    records = [{"sample_id": "PN001", "image_path": "a"}]
+
+    try:
+        filter_records(records, ["missing"])
+    except ValueError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("missing include-image should fail")
+
+    assert "include-image sample_id" in message
+    assert "PN001" in message
 
 
 def test_aggregate_sample_records_metrics_thresholds_and_clump_na(tmp_path):
@@ -147,3 +176,16 @@ def test_batch_metrics_do_not_emit_topology_metrics(tmp_path):
 
     forbidden = ("endpoint", "crossing", "junction", "branch", "merge")
     assert not any(word in keys for word in forbidden)
+
+
+def test_explicit_checkpoint_path_wins_over_run_dir(tmp_path):
+    from scripts.evaluate_real_pilot_baseline import resolve_checkpoint_path
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    final = run_dir / "model.pt"
+    best = run_dir / "model_best.pt"
+    final.write_bytes(b"final")
+    best.write_bytes(b"best")
+
+    assert resolve_checkpoint_path(best, run_dir) == best

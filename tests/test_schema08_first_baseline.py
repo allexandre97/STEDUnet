@@ -156,6 +156,217 @@ def test_small_unet_outputs_semantic_and_skeleton_heads():
     assert outputs["skeleton_logits"].shape == (2, 1, 32, 32)
 
 
+def test_small_unet_forward_supports_128():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import SmallUNet
+
+    outputs = SmallUNet(base_channels=4)(torch.zeros(1, 1, 128, 128))
+    assert outputs["semantic_logits"].shape == (1, 3, 128, 128)
+    assert outputs["skeleton_logits"].shape == (1, 1, 128, 128)
+
+
+def test_context_unet_forward_supports_128_and_256():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import ContextUNet
+
+    model = ContextUNet(base_channels=4, context_module="aspp", aspp_dilations=[1, 2, 4, 8])
+    for size in (128, 256):
+        outputs = model(torch.zeros(1, 1, size, size))
+        assert outputs["semantic_logits"].shape == (1, 3, size, size)
+        assert outputs["skeleton_logits"].shape == (1, 1, size, size)
+        assert "uncertainty_logits" not in outputs
+
+
+def test_context_unet_context_module_none_and_aspp_work():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import ContextUNet
+
+    for context_module in ("none", "aspp"):
+        model = ContextUNet(base_channels=4, context_module=context_module, aspp_dilations=[1, 2])
+        outputs = model(torch.zeros(1, 1, 128, 128))
+        assert outputs["semantic_logits"].shape == (1, 3, 128, 128)
+        assert outputs["skeleton_logits"].shape == (1, 1, 128, 128)
+
+
+def test_aspp_block_preserves_spatial_dimensions():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import ASPPBlock
+
+    block = ASPPBlock(8, [1, 2, 4, 8])
+    out = block(torch.zeros(2, 8, 17, 19))
+    assert out.shape == (2, 8, 17, 19)
+
+
+def test_context_unet_uncertainty_head_is_optional():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import ContextUNet
+
+    without_head = ContextUNet(base_channels=4, context_module="none")
+    with_head = ContextUNet(base_channels=4, context_module="none", uncertainty_head=True)
+
+    assert "uncertainty_logits" not in without_head(torch.zeros(1, 1, 32, 32))
+    assert with_head(torch.zeros(1, 1, 32, 32))["uncertainty_logits"].shape == (1, 1, 32, 32)
+
+
+def test_init_checkpoint_can_warm_start_uncertainty_head_model(tmp_path):
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import SmallUNet, load_initial_checkpoint
+
+    source = SmallUNet(base_channels=4)
+    checkpoint = tmp_path / "model.pt"
+    torch.save({"model_state_dict": source.state_dict(), "config": {"fixture": True}}, checkpoint)
+    target = SmallUNet(base_channels=4, uncertainty_head=True)
+
+    report = load_initial_checkpoint(target, str(checkpoint), torch.device("cpu"))
+
+    assert report["path"] == str(checkpoint)
+    assert report["checkpoint_config"] == {"fixture": True}
+    assert set(report["missing_keys"]) == {"uncertainty_head.weight", "uncertainty_head.bias"}
+    assert report["unexpected_keys"] == []
+
+
+def test_old_small_unet_checkpoint_can_warm_start_context_unet(tmp_path):
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import ContextUNet, SmallUNet, load_initial_checkpoint
+
+    checkpoint = tmp_path / "model.pt"
+    torch.save({"model_state_dict": SmallUNet(base_channels=4).state_dict()}, checkpoint)
+    target = ContextUNet(base_channels=4, context_module="aspp", aspp_dilations=[1, 2])
+
+    report = load_initial_checkpoint(target, str(checkpoint), torch.device("cpu"))
+
+    assert report["unexpected_keys"] == []
+    assert all(key.startswith("context.") for key in report["missing_keys"])
+
+
+def test_training_script_accepts_init_checkpoint_argument():
+    pytest.importorskip("torch")
+    import scripts.train_first_baseline as train_script
+
+    args = train_script.build_parser().parse_args(
+        [
+            "--manifest",
+            "manifest.csv",
+            "--out",
+            "run",
+            "--init-checkpoint",
+            "model.pt",
+        ]
+    )
+    config = train_script.config_from_args(args)
+
+    assert config.init_checkpoint == "model.pt"
+    assert config.command_line_args["init_checkpoint"] == "model.pt"
+
+
+def test_training_script_accepts_context_v2_arguments():
+    pytest.importorskip("torch")
+    import scripts.train_first_baseline as train_script
+
+    args = train_script.build_parser().parse_args(
+        [
+            "--manifest",
+            "manifest.csv",
+            "--out",
+            "run",
+            "--model-variant",
+            "context_unet",
+            "--context-module",
+            "aspp",
+            "--aspp-dilations",
+            "1,2,4,8",
+            "--enable-uncertainty-head",
+            "--lambda-uncertainty",
+            "0.1",
+            "--uncertainty-loss",
+            "balanced_bce",
+            "--uncertain-skeleton-policy",
+            "suppress",
+            "--lambda-clump-anti-fibrous",
+            "0.25",
+            "--lambda-clump-anti-skeleton",
+            "0.5",
+        ]
+    )
+    config = train_script.config_from_args(args)
+
+    assert config.model_variant == "context_unet"
+    assert config.context_module == "aspp"
+    assert config.enable_uncertainty_head is True
+    assert config.uncertainty_loss == "balanced_bce"
+    assert config.uncertain_skeleton_policy == "suppress"
+    assert config.lambda_clump_anti_fibrous == 0.25
+    assert config.lambda_clump_anti_skeleton == 0.5
+
+
+def test_training_script_accepts_checkpoint_bookkeeping_arguments():
+    pytest.importorskip("torch")
+    import scripts.train_first_baseline as train_script
+
+    args = train_script.build_parser().parse_args(
+        [
+            "--manifest",
+            "manifest.csv",
+            "--out",
+            "run",
+            "--save-best-checkpoint",
+            "--best-metric",
+            "fibrous_dice",
+            "--best-mode",
+            "max",
+            "--early-stop-patience",
+            "10",
+            "--early-stop-min-delta",
+            "0.001",
+            "--early-stop-warmup-epochs",
+            "15",
+            "--save-checkpoint-every",
+            "5",
+        ]
+    )
+    config = train_script.config_from_args(args)
+
+    assert config.save_best_checkpoint is True
+    assert config.best_metric == "fibrous_dice"
+    assert config.best_mode == "max"
+    assert config.early_stop_patience == 10
+    assert config.early_stop_min_delta == 0.001
+    assert config.early_stop_warmup_epochs == 15
+    assert config.save_checkpoint_every == 5
+
+
+def test_best_mode_auto_maps_loss_to_min():
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import resolve_best_mode
+
+    assert resolve_best_mode("loss", "auto") == "min"
+
+
+@pytest.mark.parametrize("metric", ["fibrous_dice", "clump_dice", "skeleton_dice", "skeleton_dice_0.75", "uncertain_dice"])
+def test_best_mode_auto_maps_dice_metrics_to_max(metric):
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import resolve_best_mode
+
+    assert resolve_best_mode(metric, "auto") == "max"
+
+
+def test_unavailable_best_metric_fails_clearly():
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import selected_validation_metric
+
+    with pytest.raises(ValueError, match="validation metric 'clump_dice' is not numeric"):
+        selected_validation_metric({"loss": 0.1, "clump_dice": "not_applicable"}, "clump_dice")
+
+
+def test_threshold_best_metric_reads_nested_validation_metric():
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import selected_validation_metric
+
+    metrics = {"skeleton_metrics_by_threshold": {"0.75": {"dice": 0.7}}}
+
+    assert selected_validation_metric(metrics, "skeleton_dice_0.75") == 0.7
+
+
 def test_metrics_mark_clump_not_applicable_without_target_pixels():
     torch = pytest.importorskip("torch")
     from fibras.training.schema08_baseline import evaluate_model
@@ -232,7 +443,146 @@ def test_skeleton_threshold_is_recorded_in_metrics():
     }
     metrics = evaluate_model(EmptyModel(), [batch], torch.device("cpu"), 0.5, 8.0, 0.25)
     assert metrics["skeleton_threshold"] == 0.25
-    assert set(metrics["skeleton_metrics_by_threshold"]) == {"0.25", "0.5", "0.75"}
+    assert set(metrics["skeleton_metrics_by_threshold"]) == {"0.25", "0.5", "0.75", "0.85"}
+
+
+def test_uncertainty_loss_supervises_uncertain_ignore_without_semantic_background():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import IGNORE_INDEX, compute_loss
+
+    outputs = {
+        "semantic_logits": torch.zeros(1, 3, 2, 2),
+        "skeleton_logits": torch.zeros(1, 1, 2, 2),
+        "uncertainty_logits": torch.zeros(1, 1, 2, 2),
+    }
+    batch = {
+        "semantic": torch.tensor([[[IGNORE_INDEX, 0], [1, 2]]]),
+        "skeleton": torch.zeros(1, 1, 2, 2),
+        "uncertain": torch.tensor([[[[1.0, 0.0], [0.0, 0.0]]]]),
+        "valid": torch.tensor([[[[0.0, 1.0], [1.0, 1.0]]]]),
+    }
+
+    _, parts = compute_loss(outputs, batch, lambda_uncertainty=1.0)
+
+    assert "uncertainty_loss" in parts
+    assert batch["semantic"][0, 0, 0].item() == IGNORE_INDEX
+
+
+@pytest.mark.parametrize("loss_name", ["bce", "balanced_bce", "focal_bce"])
+def test_uncertainty_loss_modes_are_supported(loss_name):
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import uncertainty_loss_value
+
+    logits = torch.zeros(1, 1, 2, 2)
+    target = torch.tensor([[[[1.0, 0.0], [0.0, 0.0]]]])
+
+    loss = uncertainty_loss_value(logits, target, loss_name, 2.0, "auto")
+
+    assert torch.isfinite(loss)
+    assert float(loss) > 0.0
+
+
+def test_uncertain_skeleton_policy_can_suppress_uncertain_pixels():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import IGNORE_INDEX, compute_loss
+
+    outputs = {
+        "semantic_logits": torch.zeros(1, 3, 1, 2),
+        "skeleton_logits": torch.full((1, 1, 1, 2), 10.0),
+    }
+    batch = {
+        "semantic": torch.tensor([[[IGNORE_INDEX, 0]]]),
+        "skeleton": torch.zeros(1, 1, 1, 2),
+        "uncertain": torch.tensor([[[[1.0, 0.0]]]]),
+        "valid": torch.tensor([[[[0.0, 1.0]]]]),
+    }
+
+    _, ignored = compute_loss(outputs, batch, uncertain_skeleton_policy="ignore")
+    _, suppressed = compute_loss(outputs, batch, uncertain_skeleton_policy="suppress")
+
+    assert suppressed["skeleton_loss"] > ignored["skeleton_loss"]
+
+
+def test_uncertain_skeleton_policy_suppress_overrides_uncertain_skeleton_target():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import IGNORE_INDEX, compute_loss
+
+    outputs = {
+        "semantic_logits": torch.zeros(1, 3, 1, 2),
+        "skeleton_logits": torch.full((1, 1, 1, 2), 10.0),
+    }
+    batch = {
+        "semantic": torch.tensor([[[IGNORE_INDEX, 0]]]),
+        "skeleton": torch.tensor([[[[1.0, 0.0]]]]),
+        "uncertain": torch.tensor([[[[1.0, 0.0]]]]),
+        "valid": torch.tensor([[[[0.0, 1.0]]]]),
+    }
+
+    _, ignored = compute_loss(outputs, batch, uncertain_skeleton_policy="ignore")
+    _, suppressed = compute_loss(outputs, batch, uncertain_skeleton_policy="suppress")
+
+    assert ignored["skeleton_loss"] < 1e-3
+    assert suppressed["skeleton_loss"] > 9.0
+
+
+def test_clump_protection_losses_apply_only_inside_target_clump():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import compute_loss
+
+    outputs = {
+        "semantic_logits": torch.tensor([[[[0.0, 0.0]], [[5.0, 5.0]], [[0.0, 0.0]]]]),
+        "skeleton_logits": torch.full((1, 1, 1, 2), 5.0),
+    }
+    clump_batch = {
+        "semantic": torch.tensor([[[2, 0]]]),
+        "skeleton": torch.zeros(1, 1, 1, 2),
+        "uncertain": torch.zeros(1, 1, 1, 2),
+        "valid": torch.ones(1, 1, 1, 2),
+    }
+    background_batch = {**clump_batch, "semantic": torch.zeros(1, 1, 2, dtype=torch.long)}
+
+    _, clump_parts = compute_loss(outputs, clump_batch)
+    _, background_parts = compute_loss(outputs, background_batch)
+
+    assert clump_parts["clump_anti_fibrous_loss"] > 0
+    assert clump_parts["clump_anti_skeleton_loss"] > 0
+    assert background_parts["clump_anti_fibrous_loss"] == 0
+    assert background_parts["clump_anti_skeleton_loss"] == 0
+
+
+def test_validation_metrics_include_enabled_auxiliary_losses():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import evaluate_model
+
+    class EmptyUncertaintyModel(torch.nn.Module):
+        def forward(self, image):
+            b, _, h, w = image.shape
+            return {
+                "semantic_logits": torch.zeros(b, 3, h, w, device=image.device),
+                "skeleton_logits": torch.zeros(b, 1, h, w, device=image.device),
+                "uncertainty_logits": torch.zeros(b, 1, h, w, device=image.device),
+            }
+
+    batch = {
+        "image": torch.zeros(1, 1, 4, 4),
+        "semantic": torch.zeros(1, 4, 4, dtype=torch.long),
+        "skeleton": torch.zeros(1, 1, 4, 4),
+        "uncertain": torch.zeros(1, 1, 4, 4),
+        "valid": torch.ones(1, 1, 4, 4),
+    }
+    metrics = evaluate_model(
+        EmptyUncertaintyModel(),
+        [batch],
+        torch.device("cpu"),
+        0.5,
+        8.0,
+        lambda_uncertainty=0.25,
+        lambda_clump_anti_fibrous=0.25,
+        lambda_clump_anti_skeleton=0.25,
+    )
+    assert "uncertainty_loss" in metrics
+    assert "clump_anti_fibrous_loss" in metrics
+    assert "clump_anti_skeleton_loss" in metrics
 
 
 def test_cuda_request_fails_clearly_when_unavailable(monkeypatch):
@@ -337,7 +687,7 @@ def test_wandb_config_payload_contains_training_metadata(tmp_path):
     assert payload["metadata"]["split_counts"] == {"train": 2, "validation": 1}
     assert payload["metadata"]["schema_versions"] == ["synthetic_sted_3d_morphology_0.8.0"]
     assert payload["metadata"]["generator_versions"] == ["fixture"]
-    assert payload["model"]["architecture"] == "SmallUNet"
+    assert payload["model"]["architecture"] == "small_unet"
 
 
 def test_wandb_epoch_metrics_are_flattened_and_loggable():
@@ -406,3 +756,145 @@ def test_training_is_deterministic_with_wandb_disabled(tmp_path):
     second = train_baseline(BaselineConfig(out=str(tmp_path / "run_b"), **common))
     assert first["log"] == second["log"]
     assert first["validation_metrics"] == second["validation_metrics"]
+
+
+def fake_validation_metric_sequence(monkeypatch, values, metric="loss"):
+    import fibras.training.schema08_baseline as baseline
+
+    values = iter(values)
+
+    def fake_evaluate_model(*args, **kwargs):
+        value = float(next(values))
+        metrics = {
+            "loss": value if metric == "loss" else 1.0,
+            "semantic_loss": 0.1,
+            "skeleton_loss": 0.2,
+            "clump_anti_fibrous_loss": 0.0,
+            "clump_anti_skeleton_loss": 0.0,
+            "fibrous_dice": value if metric == "fibrous_dice" else 0.5,
+            "clump_dice": 0.4,
+            "clump_target_pixels": 1,
+            "uncertain_dice": 0.3,
+            "uncertain_precision": 0.3,
+            "uncertain_recall": 0.3,
+            "uncertain_target_pixels": 1,
+            "uncertainty_probability_by_target_region": {},
+            "skeleton_dice": 0.2,
+            "skeleton_precision": 0.2,
+            "skeleton_recall": 0.2,
+            "skeleton_threshold": 0.5,
+            "skeleton_metrics_by_threshold": {"0.75": {"dice": value if metric == "skeleton_dice_0.75" else 0.2}},
+            "predicted_skeleton_inside_predicted_fibrous_fraction": 0.2,
+            "predicted_skeleton_inside_true_fibrous_fraction": 0.2,
+        }
+        return metrics
+
+    monkeypatch.setattr(baseline, "evaluate_model", fake_evaluate_model)
+
+
+def tiny_baseline_config(tmp_path, **overrides):
+    from fibras.training.schema08_baseline import BaselineConfig
+
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    write_dataset(dataset, 5)
+    manifest = tmp_path / "training_manifest.csv"
+    build_training_manifest(dataset, manifest, root=tmp_path)
+    params = dict(
+        manifest=str(manifest),
+        out=str(tmp_path / "run"),
+        epochs=3,
+        batch_size=2,
+        patch_size=16,
+        patches_per_sample=1,
+        validation_patches_per_sample=1,
+        patches_per_epoch=2,
+        limit_train_samples=3,
+        limit_val_samples=1,
+        seed=99,
+        device="cpu",
+    )
+    params.update(overrides)
+    return BaselineConfig(**params)
+
+
+def test_best_checkpoint_is_saved_and_matches_best_epoch(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import train_baseline
+
+    fake_validation_metric_sequence(monkeypatch, [0.5, 0.4, 0.45, 0.45])
+    config = tiny_baseline_config(tmp_path, save_best_checkpoint=True, epochs=3)
+
+    train_baseline(config)
+
+    best = tmp_path / "run" / "model_best.pt"
+    final = tmp_path / "run" / "model.pt"
+    assert best.exists()
+    assert final.exists()
+    assert torch.load(best, map_location="cpu")["epoch"] == 2
+    assert torch.load(final, map_location="cpu")["epoch"] == 3
+
+
+def test_checkpoint_summary_records_best_and_final_paths(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import train_baseline
+
+    fake_validation_metric_sequence(monkeypatch, [0.5, 0.4, 0.45, 0.45])
+    train_baseline(tiny_baseline_config(tmp_path, save_best_checkpoint=True, epochs=3))
+
+    summary = json.loads((tmp_path / "run" / "checkpoint_summary.json").read_text(encoding="utf-8"))
+    assert summary["best_epoch"] == 2
+    assert summary["best_value"] == 0.4
+    assert summary["final_epoch"] == 3
+    assert summary["stopped_early"] is False
+    assert summary["best_checkpoint_path"].endswith("model_best.pt")
+    assert summary["final_checkpoint_path"].endswith("model.pt")
+
+
+def test_early_stopping_triggers_after_patience(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import train_baseline
+
+    fake_validation_metric_sequence(monkeypatch, [0.5, 0.6, 0.7, 0.7])
+    train_baseline(tiny_baseline_config(tmp_path, epochs=5, early_stop_patience=2))
+
+    summary = json.loads((tmp_path / "run" / "checkpoint_summary.json").read_text(encoding="utf-8"))
+    assert summary["stopped_early"] is True
+    assert summary["final_epoch"] == 3
+    assert "no improvement in validation loss for 2 validation epochs" in summary["early_stop_reason"]
+
+
+def test_early_stopping_respects_warmup_epochs(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import train_baseline
+
+    fake_validation_metric_sequence(monkeypatch, [0.5, 0.6, 0.7, 0.8])
+    train_baseline(tiny_baseline_config(tmp_path, epochs=5, early_stop_patience=1, early_stop_warmup_epochs=3))
+
+    summary = json.loads((tmp_path / "run" / "checkpoint_summary.json").read_text(encoding="utf-8"))
+    assert summary["stopped_early"] is True
+    assert summary["final_epoch"] == 3
+
+
+def test_periodic_checkpoints_are_saved_when_enabled(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import train_baseline
+
+    fake_validation_metric_sequence(monkeypatch, [0.5, 0.4, 0.3, 0.3])
+    train_baseline(tiny_baseline_config(tmp_path, epochs=3, save_checkpoint_every=2))
+
+    periodic = tmp_path / "run" / "checkpoints" / "model_epoch_0002.pt"
+    summary = json.loads((tmp_path / "run" / "checkpoint_summary.json").read_text(encoding="utf-8"))
+    assert periodic.exists()
+    assert summary["periodic_checkpoint_paths"] == [str(periodic)]
+
+
+def test_default_training_writes_existing_final_checkpoint(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import train_baseline
+
+    fake_validation_metric_sequence(monkeypatch, [0.5, 0.4])
+    train_baseline(tiny_baseline_config(tmp_path, epochs=1))
+
+    assert (tmp_path / "run" / "model.pt").exists()
+    assert not (tmp_path / "run" / "model_best.pt").exists()

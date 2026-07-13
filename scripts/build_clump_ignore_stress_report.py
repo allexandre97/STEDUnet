@@ -16,6 +16,15 @@ try:
 except Exception:  # pragma: no cover - report still works without scipy.
     scipy_ndimage = None
 
+UNCERTAIN_FAMILY_CODES = {
+    1: "faint_fragments",
+    2: "defocused_streaks",
+    4: "merged_boundary_filaments",
+    6: "bundle_clump_transition",
+    7: "clump_halo_texture",
+    11: "filamentous_fluff",
+}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -69,6 +78,12 @@ def sample_metrics(
     total = semantic.size
     high_signal = render >= np.percentile(render, 95)
     patch = patch_metrics(clump, uncertain, skeleton, 128)
+    uncertain_lengths = arrays.get("uncertain_fragment_length_px", np.zeros(0, dtype=np.float32))
+    uncertain_codes = arrays.get("uncertain_family_code", np.zeros(0, dtype=np.uint8))
+    uncertain_lengths = uncertain_lengths[uncertain_codes > 0]
+    component = component_metrics(uncertain)
+    variance = local_variance_metrics(render, uncertain)
+    family = uncertain_family_counts(uncertain_codes)
     return {
         "scenario": str(metadata.get("scenario", "not_reported")),
         "scenario_category": str(
@@ -87,15 +102,23 @@ def sample_metrics(
         "clump_area_fraction": float(clump.sum() / total),
         "largest_clump_component_fraction": largest_component_fraction(clump),
         "uncertain_ignore_fraction": float(uncertain.sum() / total),
+        "has_uncertain_ignore": bool(uncertain.sum() > 0),
         "skeleton_pixels_inside_clump": int((skeleton & clump).sum()),
         "skeleton_pixels_inside_uncertain_ignore": int((skeleton & uncertain).sum()),
         "fibrous_tau_pixels_inside_clump": int((fibrous & clump).sum()),
         "fibrous_tau_pixels_inside_uncertain_ignore": int((fibrous & uncertain).sum()),
+        "clump_pixels_inside_uncertain_ignore": int((clump & uncertain).sum()),
         "clump_high_signal_fraction": fraction((clump & high_signal).sum(), clump.sum()),
         "uncertain_ignore_high_signal_fraction": fraction((uncertain & high_signal).sum(), uncertain.sum()),
+        "uncertain_fragment_length_mean": float(np.mean(uncertain_lengths)) if uncertain_lengths.size else 0.0,
+        "uncertain_fragment_length_p95": float(np.percentile(uncertain_lengths, 95)) if uncertain_lengths.size else 0.0,
+        **component,
+        **variance,
+        **family,
         "source_support_consistency": {
             "fibrous_overlaps_clump": int((fibrous & clump).sum()),
             "fibrous_overlaps_uncertain_ignore": int((fibrous & uncertain).sum()),
+            "clump_overlaps_uncertain_ignore": int((clump & uncertain).sum()),
             "skeleton_overlaps_clump": int((skeleton & clump).sum()),
             "skeleton_overlaps_uncertain_ignore": int((skeleton & uncertain).sum()),
         },
@@ -104,6 +127,7 @@ def sample_metrics(
         "intensity_p99": float(np.percentile(render, 99)),
         "clump_region_intensity": percentiles(render[clump]),
         "uncertain_ignore_region_intensity": percentiles(render[uncertain]),
+        "fibrous_region_intensity": percentiles(render[fibrous]),
         "background_region_intensity": percentiles(render[semantic == 0]),
         **patch,
     }
@@ -115,6 +139,8 @@ def aggregate(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         "uncertain_ignore_fraction",
         "clump_high_signal_fraction",
         "uncertain_ignore_high_signal_fraction",
+        "uncertain_fragment_length_mean",
+        "uncertain_fragment_length_p95",
         "intensity_p50",
         "intensity_p95",
         "intensity_p99",
@@ -123,6 +149,14 @@ def aggregate(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         "patch_fraction_clump_gt_25",
         "patch_fraction_clump_gt_50",
         "patch_fraction_uncertain_gt_10",
+        "patch_fraction_uncertain_gt_25",
+        "max_patch_uncertain_fraction",
+        "uncertain_component_count",
+        "uncertain_component_area_p50",
+        "uncertain_component_area_p95",
+        "uncertain_component_area_max",
+        "uncertain_local_variance_p50",
+        "uncertain_local_variance_p95",
         "patch_skeleton_pixels_inside_clump",
         "patch_skeleton_pixels_inside_uncertain_ignore",
     ]
@@ -131,13 +165,17 @@ def aggregate(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         "skeleton_pixels_inside_uncertain_ignore",
         "fibrous_tau_pixels_inside_clump",
         "fibrous_tau_pixels_inside_uncertain_ignore",
+        "clump_pixels_inside_uncertain_ignore",
     ]
     out = {key: float(np.mean([m[key] for m in metrics])) if metrics else 0.0 for key in keys}
     out.update({key: int(sum(int(m[key]) for m in metrics)) for key in count_keys})
-    for prefix in ["clump_region_intensity", "uncertain_ignore_region_intensity", "background_region_intensity"]:
+    for prefix in ["clump_region_intensity", "uncertain_ignore_region_intensity", "fibrous_region_intensity", "background_region_intensity"]:
         for percentile in ["p50", "p95", "p99"]:
             key = f"{prefix}_{percentile}"
             out[key] = float(np.mean([m[prefix][percentile] for m in metrics])) if metrics else 0.0
+    for family in UNCERTAIN_FAMILY_CODES.values():
+        key = f"uncertain_family_{family}_count"
+        out[key] = int(sum(int(m.get(key, 0)) for m in metrics))
     return out
 
 
@@ -146,6 +184,16 @@ def distributions(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         "clump_area_fraction": summary_values(metrics, "clump_area_fraction"),
         "largest_clump_component_fraction": summary_values(metrics, "largest_clump_component_fraction"),
         "uncertain_ignore_fraction": summary_values(metrics, "uncertain_ignore_fraction"),
+        "max_patch_uncertain_fraction": summary_values(metrics, "max_patch_uncertain_fraction"),
+        "uncertain_ignore_sample_fraction": fraction(
+            sum(m["has_uncertain_ignore"] for m in metrics), len(metrics)
+        ),
+        "uncertain_ignore_gt_5_fraction": fraction(
+            sum(m["uncertain_ignore_fraction"] > 0.05 for m in metrics), len(metrics)
+        ),
+        "uncertain_ignore_gt_10_fraction": fraction(
+            sum(m["uncertain_ignore_fraction"] > 0.10 for m in metrics), len(metrics)
+        ),
         "largest_clump_gt_5_fraction": fraction(
             sum(m["largest_clump_component_fraction"] > 0.05 for m in metrics),
             len(metrics),
@@ -161,7 +209,7 @@ def distributions(metrics: list[dict[str, Any]]) -> dict[str, Any]:
             sum(m["clump_area_fraction"] > 0 for m in metrics), len(metrics)
         ),
         "clump_ignore_stress_sample_fraction": fraction(
-            sum(m["scenario_category"] == "clump_ignore_stress" for m in metrics),
+            sum(m["scenario_category"] in {"clump_ignore_stress", "uncertain_ignore_stress"} for m in metrics),
             len(metrics),
         ),
     }
@@ -219,10 +267,12 @@ def patch_metrics(
     uncertain_fracs = window_fractions(uncertain, patch_size)
     return {
         "max_patch_clump_fraction": float(clump_fracs.max(initial=0.0)),
+        "max_patch_uncertain_fraction": float(uncertain_fracs.max(initial=0.0)),
         "patch_count": int(clump_fracs.size),
         "patch_fraction_clump_gt_25": fraction(np.count_nonzero(clump_fracs > 0.25), clump_fracs.size),
         "patch_fraction_clump_gt_50": fraction(np.count_nonzero(clump_fracs > 0.50), clump_fracs.size),
         "patch_fraction_uncertain_gt_10": fraction(np.count_nonzero(uncertain_fracs > 0.10), uncertain_fracs.size),
+        "patch_fraction_uncertain_gt_25": fraction(np.count_nonzero(uncertain_fracs > 0.25), uncertain_fracs.size),
         "patch_skeleton_pixels_inside_clump": int((skeleton & clump).sum()),
         "patch_skeleton_pixels_inside_uncertain_ignore": int((skeleton & uncertain).sum()),
     }
@@ -243,12 +293,60 @@ def window_fractions(mask: np.ndarray, patch_size: int) -> np.ndarray:
     )
 
 
+def component_metrics(mask: np.ndarray) -> dict[str, float | int]:
+    if not np.any(mask):
+        return {
+            "uncertain_component_count": 0,
+            "uncertain_component_area_p50": 0.0,
+            "uncertain_component_area_p95": 0.0,
+            "uncertain_component_area_max": 0.0,
+        }
+    if scipy_ndimage is None:
+        area = float(mask.sum())
+        return {
+            "uncertain_component_count": 1,
+            "uncertain_component_area_p50": area,
+            "uncertain_component_area_p95": area,
+            "uncertain_component_area_max": area,
+        }
+    labels, count = scipy_ndimage.label(mask)
+    areas = np.bincount(labels.ravel())[1:].astype(np.float32)
+    return {
+        "uncertain_component_count": int(count),
+        "uncertain_component_area_p50": float(np.percentile(areas, 50)),
+        "uncertain_component_area_p95": float(np.percentile(areas, 95)),
+        "uncertain_component_area_max": float(np.max(areas)),
+    }
+
+
+def local_variance_metrics(render: np.ndarray, mask: np.ndarray) -> dict[str, float]:
+    if not np.any(mask) or scipy_ndimage is None:
+        return {"uncertain_local_variance_p50": 0.0, "uncertain_local_variance_p95": 0.0}
+    image = render.astype(np.float32)
+    mean = scipy_ndimage.uniform_filter(image, size=9)
+    mean2 = scipy_ndimage.uniform_filter(image * image, size=9)
+    variance = np.maximum(mean2 - mean * mean, 0)
+    values = variance[mask]
+    return {
+        "uncertain_local_variance_p50": float(np.percentile(values, 50)),
+        "uncertain_local_variance_p95": float(np.percentile(values, 95)),
+    }
+
+
+def uncertain_family_counts(codes: np.ndarray) -> dict[str, int]:
+    return {
+        f"uncertain_family_{name}_count": int(np.count_nonzero(codes == code))
+        for code, name in UNCERTAIN_FAMILY_CODES.items()
+    }
+
+
 def max_leakage(metrics: list[dict[str, Any]]) -> dict[str, int]:
     keys = [
         "skeleton_pixels_inside_clump",
         "skeleton_pixels_inside_uncertain_ignore",
         "fibrous_tau_pixels_inside_clump",
         "fibrous_tau_pixels_inside_uncertain_ignore",
+        "clump_pixels_inside_uncertain_ignore",
     ]
     return {key: max([int(m[key]) for m in metrics], default=0) for key in keys}
 
@@ -294,16 +392,19 @@ def sample_panel(arrays: dict[str, np.ndarray]) -> Image.Image:
     panels = [
         ("raw/composite", gray(render)),
         ("semantic", semantic_rgb(arrays["real_compatible_semantic_mask"])),
+        ("fibrous", mask_rgb(arrays["real_compatible_fibrous_mask"], (0, 220, 80))),
         ("clump", mask_rgb(arrays["real_compatible_clump_mask"], (255, 130, 0))),
         ("uncertain", mask_rgb(arrays["real_compatible_uncertain_ignore_mask"], (170, 90, 255))),
         ("skeleton", mask_rgb(arrays["real_compatible_skeleton_mask"], (255, 0, 255))),
+        ("uncertain overlay", uncertain_overlay(render, arrays)),
         ("clump fragments", latent_fragment_rgb(arrays)),
         ("high clump crop", high_fraction_crop(render, arrays["real_compatible_clump_mask"])),
-        ("transition crop", high_fraction_crop(render, arrays["real_compatible_uncertain_ignore_mask"])),
+        ("uncertain crop", high_fraction_crop(render, arrays["real_compatible_uncertain_ignore_mask"])),
         ("source support", source_support_rgb(arrays)),
     ]
     tile = 192
-    canvas = Image.new("RGB", (4 * tile, 2 * (tile + 18)), "white")
+    rows = int(np.ceil(len(panels) / 4))
+    canvas = Image.new("RGB", (4 * tile, rows * (tile + 18)), "white")
     for i, (title, arr) in enumerate(panels):
         img = Image.fromarray(arr.astype(np.uint8), "RGB").resize((tile, tile), Image.Resampling.BILINEAR)
         x = (i % 4) * tile
@@ -339,6 +440,12 @@ def clump_ignore_overlay(render: np.ndarray, arrays: dict[str, np.ndarray]) -> n
     return np.clip(rgb, 0, 255).astype(np.uint8)
 
 
+def uncertain_overlay(render: np.ndarray, arrays: dict[str, np.ndarray]) -> np.ndarray:
+    rgb = gray(render).astype(np.float32)
+    blend(rgb, arrays["real_compatible_uncertain_ignore_mask"].astype(bool), (170, 90, 255), 0.55)
+    return np.clip(rgb, 0, 255).astype(np.uint8)
+
+
 def source_support_rgb(arrays: dict[str, np.ndarray]) -> np.ndarray:
     shape = arrays["render_uint8"].shape
     rgb = np.zeros((*shape, 3), dtype=np.uint8)
@@ -346,6 +453,7 @@ def source_support_rgb(arrays: dict[str, np.ndarray]) -> np.ndarray:
         ("individual_filament_source_support_mask", (0, 220, 80)),
         ("bundle_source_support_mask", (0, 170, 255)),
         ("clump_source_support_mask", (255, 130, 0)),
+        ("uncertain_ignore_source_support_mask", (170, 90, 255)),
     ]:
         if name in arrays:
             rgb[arrays[name].astype(bool)] = color
@@ -409,15 +517,25 @@ def markdown_report(summary: dict[str, Any]) -> str:
             f"- Largest clump component fraction p50/p95/max: {dist['largest_clump_component_fraction']['p50']:.4f}/{dist['largest_clump_component_fraction']['p95']:.4f}/{dist['largest_clump_component_fraction']['max']:.4f}",
             f"- Samples with largest clump >5%/>10% image area: {dist['largest_clump_gt_5_fraction']:.3f}/{dist['largest_clump_gt_10_fraction']:.3f}",
             f"- Uncertain_ignore fraction mean/p50/p95/max: {dist['uncertain_ignore_fraction']['mean']:.4f}/{dist['uncertain_ignore_fraction']['p50']:.4f}/{dist['uncertain_ignore_fraction']['p95']:.4f}/{dist['uncertain_ignore_fraction']['max']:.4f}",
+            f"- Fraction of samples with uncertain_ignore: {dist['uncertain_ignore_sample_fraction']:.3f}",
+            f"- Fraction of samples with uncertain_ignore >5%/>10%: {dist['uncertain_ignore_gt_5_fraction']:.3f}/{dist['uncertain_ignore_gt_10_fraction']:.3f}",
             f"- Samples with no clumps/with clumps/stress category: {dist['no_clump_sample_fraction']:.3f}/{dist['clump_sample_fraction']:.3f}/{dist['clump_ignore_stress_sample_fraction']:.3f}",
             f"- Skeleton pixels inside clump: {mean['skeleton_pixels_inside_clump']}",
             f"- Skeleton pixels inside uncertain_ignore: {mean['skeleton_pixels_inside_uncertain_ignore']}",
             f"- Fibrous_tau pixels inside clump: {mean['fibrous_tau_pixels_inside_clump']}",
             f"- Fibrous_tau pixels inside uncertain_ignore: {mean['fibrous_tau_pixels_inside_uncertain_ignore']}",
+            f"- Clump pixels inside uncertain_ignore: {mean['clump_pixels_inside_uncertain_ignore']}",
             f"- Intensity p50/p95/p99: {mean['intensity_p50']:.2f}/{mean['intensity_p95']:.2f}/{mean['intensity_p99']:.2f}",
             f"- Clump-region intensity p50/p95/p99: {mean['clump_region_intensity_p50']:.2f}/{mean['clump_region_intensity_p95']:.2f}/{mean['clump_region_intensity_p99']:.2f}",
             f"- Ignore-region intensity p50/p95/p99: {mean['uncertain_ignore_region_intensity_p50']:.2f}/{mean['uncertain_ignore_region_intensity_p95']:.2f}/{mean['uncertain_ignore_region_intensity_p99']:.2f}",
+            f"- Ignore-region local variance p50/p95: {mean['uncertain_local_variance_p50']:.2f}/{mean['uncertain_local_variance_p95']:.2f}",
+            f"- Ignore components count and area p50/p95/max: {mean['uncertain_component_count']:.1f}/{mean['uncertain_component_area_p50']:.1f}/{mean['uncertain_component_area_p95']:.1f}/{mean['uncertain_component_area_max']:.1f}",
+            f"- Fibrous-region intensity p50/p95/p99: {mean['fibrous_region_intensity_p50']:.2f}/{mean['fibrous_region_intensity_p95']:.2f}/{mean['fibrous_region_intensity_p99']:.2f}",
+            f"- Background intensity p50/p95/p99: {mean['background_region_intensity_p50']:.2f}/{mean['background_region_intensity_p95']:.2f}/{mean['background_region_intensity_p99']:.2f}",
+            f"- 128x128 max uncertain fraction and crop fractions >10%/>25%: {mean['max_patch_uncertain_fraction']:.3f}/{mean['patch_fraction_uncertain_gt_10']:.3f}/{mean['patch_fraction_uncertain_gt_25']:.3f}",
+            f"- 128x128 max uncertain fraction mean/p95/max across samples: {dist['max_patch_uncertain_fraction']['mean']:.3f}/{dist['max_patch_uncertain_fraction']['p95']:.3f}/{dist['max_patch_uncertain_fraction']['max']:.3f}",
             f"- 128x128 max clump fraction and crop fractions >25%/>50%: {mean['max_patch_clump_fraction']:.3f}/{mean['patch_fraction_clump_gt_25']:.3f}/{mean['patch_fraction_clump_gt_50']:.3f}",
+            f"- Uncertain family counts faint/defocused/fluff/halo/transition: {mean.get('uncertain_family_faint_fragments_count', 0)}/{mean.get('uncertain_family_defocused_streaks_count', 0)}/{mean.get('uncertain_family_filamentous_fluff_count', 0)}/{mean.get('uncertain_family_clump_halo_texture_count', 0)}/{mean.get('uncertain_family_bundle_clump_transition_count', 0)}",
             "",
         ]
     lines += ["QA panels are in `panels/`.", ""]

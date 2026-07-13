@@ -3,6 +3,7 @@ import pytest
 
 from scripts.evaluate_real_pilot_baseline import (
     compute_real_pilot_metrics,
+    load_model,
     run_tiled_inference,
 )
 
@@ -38,6 +39,80 @@ def test_tiled_inference_preserves_image_size():
     assert out["clump_probability"].shape == image.shape
     assert out["skeleton_probability"].shape == image.shape
     assert out["skeleton_mask_0_75"].shape == image.shape
+
+
+def test_load_model_accepts_uncertainty_head_checkpoint(tmp_path):
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import SmallUNet
+
+    checkpoint = tmp_path / "model.pt"
+    torch.save(
+        {
+            "model_state_dict": SmallUNet(uncertainty_head=True).state_dict(),
+            "config": {"enable_uncertainty_head": True},
+        },
+        checkpoint,
+    )
+
+    model, checkpoint_path, device = load_model(checkpoint, None, "cpu", torch)
+
+    assert checkpoint_path == checkpoint
+    assert str(device) == "cpu"
+    assert model.uncertainty_head is not None
+
+
+def test_load_model_accepts_context_unet_checkpoint(tmp_path):
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import ContextUNet
+
+    checkpoint = tmp_path / "model.pt"
+    torch.save(
+        {
+            "model_state_dict": ContextUNet(context_module="aspp", uncertainty_head=True).state_dict(),
+            "config": {
+                "model_variant": "context_unet",
+                "context_module": "aspp",
+                "aspp_dilations": "1,2,4,8",
+                "enable_uncertainty_head": True,
+            },
+        },
+        checkpoint,
+    )
+
+    model, _, _ = load_model(checkpoint, None, "cpu", torch)
+
+    assert model.__class__.__name__ == "ContextUNet"
+    assert model.uncertainty_head is not None
+
+
+def test_uncertainty_gating_can_suppress_fibrous_and_skeleton():
+    torch = pytest.importorskip("torch")
+
+    class UncertainFibrousModel(torch.nn.Module):
+        def forward(self, image):
+            b, _, h, w = image.shape
+            semantic = torch.zeros(b, 3, h, w, device=image.device)
+            semantic[:, 1] = 10.0
+            return {
+                "semantic_logits": semantic,
+                "skeleton_logits": torch.full((b, 1, h, w), 10.0, device=image.device),
+                "uncertainty_logits": torch.full((b, 1, h, w), 10.0, device=image.device),
+            }
+
+    out = run_tiled_inference(
+        UncertainFibrousModel(),
+        np.zeros((8, 8), dtype=np.uint8),
+        torch.device("cpu"),
+        torch,
+        patch_size=8,
+        overlap=2,
+        uncertainty_gating="suppress_both",
+        uncertainty_threshold=0.5,
+    )
+
+    assert not np.any(out["semantic_class_map"] == 1)
+    assert float(out["skeleton_probability"].max()) == 0.0
+    assert float(out["uncertainty_probability"].min()) > 0.5
 
 
 def test_uncertain_ignore_pixels_are_ignored_in_real_pilot_metrics():

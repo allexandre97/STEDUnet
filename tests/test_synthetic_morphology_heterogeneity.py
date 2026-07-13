@@ -377,6 +377,182 @@ def test_clump_ignore_stress_v2_generation_is_condition_blind():
         assert np.array_equal(a["radius_xyz"], b["radius_xyz"])
 
 
+def uncertain_config(family: str):
+    cfg = load_yaml("configs/synthetic_sted/uncertain_ignore_stress_schema08.yaml")
+    cfg["dataset_name"] = "uncertain_ignore_test"
+    cfg["sample_count"] = 1
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    cfg["scene_morphology"].pop("review_modes", None)
+    cfg["scene_morphology"]["mode"] = "mixed_morphology"
+    for name, section in cfg["uncertain_ignore"]["families"].items():
+        section["enabled"] = name == family
+        section["count_range"] = [3, 3]
+    return cfg
+
+
+def test_faint_uncertain_fragments_have_no_skeleton_target():
+    _, arrays, metadata = build_sample(uncertain_config("faint_fragments"), 0)
+    assert arrays["real_compatible_uncertain_ignore_mask"].sum() > 0
+    assert not np.any(
+        arrays["real_compatible_skeleton_mask"]
+        & arrays["real_compatible_uncertain_ignore_mask"]
+    )
+    assert validate_sample_arrays(metadata["sample_id"], arrays, metadata) == []
+
+
+def test_defocused_uncertain_streaks_do_not_become_fibrous_tau():
+    _, arrays, metadata = build_sample(uncertain_config("defocused_streaks"), 0)
+    assert arrays["real_compatible_uncertain_ignore_mask"].sum() > 0
+    assert not np.any(
+        arrays["real_compatible_fibrous_mask"]
+        & arrays["real_compatible_uncertain_ignore_mask"]
+    )
+    assert validate_sample_arrays(metadata["sample_id"], arrays, metadata) == []
+
+
+def test_clump_boundary_uncertain_halo_does_not_leak_to_skeleton():
+    cfg = uncertain_config("merged_boundary_filaments")
+    cfg["scene_morphology"]["mode"] = "clump_dominated"
+    cfg["clumps"]["count_range_by_mode"]["clump_dominated"] = [1, 1]
+    _, arrays, metadata = build_sample(cfg, 0)
+    assert arrays["real_compatible_clump_mask"].sum() > 0
+    assert arrays["real_compatible_uncertain_ignore_mask"].sum() > 0
+    assert not np.any(
+        arrays["real_compatible_skeleton_mask"]
+        & arrays["real_compatible_uncertain_ignore_mask"]
+    )
+    assert validate_sample_arrays(metadata["sample_id"], arrays, metadata) == []
+
+
+def test_bundle_to_clump_transition_keeps_roles_disjoint():
+    cfg = uncertain_config("bundle_clump_transition")
+    cfg["scene_morphology"]["mode"] = "mixed_morphology"
+    cfg["bundles"]["count_range_by_mode"]["mixed_morphology"] = [1, 1]
+    cfg["clumps"]["count_range_by_mode"]["mixed_morphology"] = [1, 1]
+    _, arrays, metadata = build_sample(cfg, 0)
+    assert arrays["real_compatible_fibrous_mask"].sum() > 0
+    assert arrays["real_compatible_uncertain_ignore_mask"].sum() > 0
+    assert arrays["real_compatible_clump_mask"].sum() > 0
+    assert not np.any(
+        arrays["real_compatible_skeleton_mask"]
+        & (
+            arrays["real_compatible_uncertain_ignore_mask"]
+            | arrays["real_compatible_clump_mask"]
+        )
+    )
+    assert validate_sample_arrays(metadata["sample_id"], arrays, metadata) == []
+
+
+def test_uncertain_ignore_generation_is_condition_blind():
+    base = uncertain_config("weak_directional_texture")
+    labelled = copy.deepcopy(base)
+    labelled.update({"culture_id": "PN148", "disease": "AD", "tau_isoform": "4R", "div": 3})
+    first = generate_morphology_geometry(base, 3)
+    second = generate_morphology_geometry(labelled, 3)
+    assert first["parameters"] == second["parameters"]
+    for a, b in zip(first["fibers"], second["fibers"]):
+        assert np.array_equal(a["points_xyz"], b["points_xyz"])
+
+
+def test_uncertain_report_metrics_include_patch_and_intensity_diagnostics():
+    shape = (256, 256)
+    arrays = {
+        "real_compatible_semantic_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_fibrous_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_clump_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_uncertain_ignore_mask": np.zeros(shape, dtype=np.uint8),
+        "real_compatible_skeleton_mask": np.zeros(shape, dtype=np.uint8),
+        "render_uint8": np.full(shape, 5, dtype=np.uint8),
+        "uncertain_family_code": np.asarray([1, 2], dtype=np.uint8),
+        "uncertain_fragment_length_px": np.asarray([12.0, 24.0], dtype=np.float32),
+    }
+    arrays["real_compatible_uncertain_ignore_mask"][:128, :128] = 1
+    arrays["real_compatible_semantic_mask"][:128, :128] = 255
+    arrays["render_uint8"][:128, :128] = 40
+    metrics = sample_metrics(arrays)
+    assert metrics["has_uncertain_ignore"] is True
+    assert metrics["patch_fraction_uncertain_gt_25"] == 0.25
+    assert metrics["uncertain_ignore_region_intensity"]["p50"] == 40.0
+    assert metrics["uncertain_fragment_length_mean"] == 18.0
+
+
+def filamentous_fluff_config():
+    cfg = load_yaml("configs/synthetic_sted/uncertain_ignore_stress_v2_schema08.yaml")
+    cfg["dataset_name"] = "filamentous_fluff_test"
+    cfg["sample_count"] = 1
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    cfg.pop("sample_variants", None)
+    cfg["scene_morphology"].pop("review_modes", None)
+    cfg["scene_morphology"]["mode"] = "mixed_morphology"
+    for name, section in cfg["uncertain_ignore"]["families"].items():
+        section["enabled"] = name == "filamentous_fluff"
+        section["count_range"] = [3, 3] if name == "filamentous_fluff" else [0, 0]
+    fluff = cfg["uncertain_ignore"]["families"]["filamentous_fluff"]
+    fluff["radius_x_range_px"] = [80.0, 110.0]
+    fluff["radius_y_range_px"] = [55.0, 90.0]
+    fluff["fragment_count_range"] = [220, 280]
+    fluff["radius_multiplier_range"] = [1.2, 2.2]
+    fluff["support_radius_multiplier"] = 4.0
+    return cfg
+
+
+def test_filamentous_fluff_creates_uncertain_area_above_minimum():
+    _, arrays, metadata = build_sample(filamentous_fluff_config(), 0)
+    frac = arrays["real_compatible_uncertain_ignore_mask"].mean()
+    assert frac > 0.02
+    assert validate_sample_arrays(metadata["sample_id"], arrays, metadata) == []
+
+
+def test_filamentous_fluff_can_create_uncertain_heavy_128px_crop():
+    _, arrays, _ = build_sample(filamentous_fluff_config(), 0)
+    metrics = sample_metrics(arrays)
+    assert metrics["max_patch_uncertain_fraction"] > 0.25
+
+
+def test_filamentous_fluff_has_no_target_leakage():
+    _, arrays, _ = build_sample(filamentous_fluff_config(), 0)
+    uncertain = arrays["real_compatible_uncertain_ignore_mask"]
+    assert not np.any(arrays["real_compatible_fibrous_mask"] & uncertain)
+    assert not np.any(arrays["real_compatible_clump_mask"] & uncertain)
+    assert not np.any(arrays["real_compatible_skeleton_mask"] & uncertain)
+
+
+def test_uncertain_ignore_stress_v2_config_validates():
+    cfg = load_yaml("configs/synthetic_sted/uncertain_ignore_stress_v2_schema08.yaml")
+    cfg["sample_count"] = 4
+    cfg["geometry"]["image_shape"] = [256, 256]
+    cfg["geometry"]["width_calibration"]["length_px"] = 160
+    cfg["targets"]["distance_transform_enabled"] = False
+    for index in range(4):
+        sample_id, arrays, metadata = build_sample(cfg, index)
+        assert validate_sample_arrays(sample_id, arrays, metadata) == []
+
+
+def test_training_v2_uncertain_has_limited_uncertain_heavy_frequency():
+    cfg = load_yaml("configs/synthetic_sted/training_v2_uncertain_schema08.yaml")
+    seq = cfg["sample_variants"]["sequence"]
+    assert "uncertain_heavy" in seq
+    frac = seq.count("uncertain_heavy") / len(seq)
+    assert 0.10 <= frac <= 0.20
+    assert cfg["uncertain_ignore"]["families"]["filamentous_fluff"]["enabled"] is False
+    assert cfg["sample_variants"]["definitions"]["uncertain_heavy"]["uncertain_ignore"]["families"]["filamentous_fluff"]["enabled"] is True
+
+
+def test_filamentous_fluff_generation_is_condition_blind():
+    base = filamentous_fluff_config()
+    labelled = copy.deepcopy(base)
+    labelled.update({"culture_id": "PN148", "disease": "AD", "tau_isoform": "4R", "div": 3})
+    first = generate_morphology_geometry(base, 2)
+    second = generate_morphology_geometry(labelled, 2)
+    assert first["parameters"] == second["parameters"]
+    for a, b in zip(first["fibers"], second["fibers"]):
+        assert np.array_equal(a["points_xyz"], b["points_xyz"])
+
+
 def test_sample_variants_cycle_without_changing_sample_namespace():
     cfg = load_yaml("configs/synthetic_sted/training_v1_schema08.yaml")
     cfg["sample_count"] = 4

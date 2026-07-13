@@ -117,9 +117,9 @@ def class_signal_alignment(
             arrays["clump_mask"].astype(bool),
             arrays["clump_signal"],
         ),
-        "uncertain_transition": (
+        "uncertain_ignore": (
             arrays["uncertain_ignore_mask"].astype(bool),
-            arrays["total_clean_signal"],
+            arrays.get("uncertain_ignore_signal", arrays["total_clean_signal"]),
         ),
     }
     uncertain = arrays["uncertain_ignore_mask"].astype(bool)
@@ -128,7 +128,7 @@ def class_signal_alignment(
         area = int(np.count_nonzero(mask))
         values = signal[mask]
         visible = signal > visible_threshold
-        compatible = mask if name == "uncertain_transition" else mask | uncertain
+        compatible = mask if name == "uncertain_ignore" else mask | uncertain
         visible_energy = float(signal[visible].sum())
         outside_energy = float(signal[visible & ~compatible].sum())
         inside_energy = float(signal[visible & mask].sum())
@@ -161,7 +161,7 @@ def class_signal_alignment(
             ),
             "fraction_of_visible_class_signal_inside_apparent_mask": (
                 None
-                if name == "uncertain_transition"
+                if name == "uncertain_ignore"
                 else (inside_energy / visible_energy if visible_energy > 0 else 0.0)
             ),
             "fraction_of_apparent_mask_with_visible_class_signal": (
@@ -183,9 +183,9 @@ def class_signal_alignment(
         "class_signal_alignment_acceptance": config.get(
             "signal_alignment_acceptance", {}
         ),
-        "class_signal_alignment_semantics": (
+            "class_signal_alignment_semantics": (
             "class-attributed clean optical signal compared with schema-0.8 "
-            "apparent supervised masks; uncertain-transition scene-wide spill "
+            "apparent supervised masks; uncertain_ignore scene-wide spill "
             "is not applicable"
         ),
     }
@@ -220,14 +220,20 @@ def finalize_morphology_apparent_targets(
         "individual_filament": arrays["individual_filament_signal"],
         "bundle": arrays["bundle_signal"],
         "clump": arrays["clump_signal"],
+        "uncertain_ignore": arrays.get(
+            "uncertain_ignore_signal",
+            np.zeros_like(arrays["clump_signal"], dtype=np.float32),
+        ),
     }
     high = {
         name: (signal >= high_threshold) & regions[name]
         for name, signal in signals.items()
+        if name != "uncertain_ignore"
     }
     low = {
         name: (signal >= low_threshold) & (signal < high_threshold) & regions[name]
         for name, signal in signals.items()
+        if name != "uncertain_ignore"
     }
 
     semantic = np.zeros_like(arrays["semantic_class_mask"], dtype=np.uint8)
@@ -246,6 +252,16 @@ def finalize_morphology_apparent_targets(
     ) & source_union
     uncertain = (low["individual_filament"] | low["bundle"] | low["clump"]) & (semantic == 0)
     uncertain |= transition_uncertain
+    uncertain_source = arrays.get("uncertain_ignore_source_support_mask")
+    if isinstance(uncertain_source, np.ndarray):
+        if bool(config.get("uncertain_source_support_always_target", True)):
+            uncertain |= uncertain_source.astype(bool) & (semantic == 0)
+        else:
+            uncertain |= (
+                (signals["uncertain_ignore"] >= low_threshold)
+                & source_influence_region(uncertain_source.astype(bool), max_distance)
+                & (semantic == 0)
+            )
     semantic[uncertain] = 255
 
     arrays["semantic_class_mask"] = semantic
@@ -476,6 +492,7 @@ def morphology_targets_3d(
     individual_raw = np.zeros(shape, dtype=np.uint8)
     bundle_raw = np.zeros(shape, dtype=np.uint8)
     clump_raw = np.zeros(shape, dtype=np.uint8)
+    uncertain_raw = np.zeros(shape, dtype=np.uint8)
     bundle_axis = np.zeros(shape, dtype=np.uint8)
     bundle_transition = np.zeros(shape, dtype=np.uint8)
     clump_transition = np.zeros(shape, dtype=np.uint8)
@@ -568,6 +585,13 @@ def morphology_targets_3d(
             and fiber.get("trace_end_status") == "terminates_in_clump"
         ):
             draw_disk(clump_transition, points[-1, :2], transition_radius)
+        if structure == "uncertain_fragment":
+            support_multiplier = float(fiber.get("uncertain_support_radius_multiplier", 1.0))
+            uncertain_raw |= rasterize_variable_disks(
+                points[:, :2],
+                np.maximum(radii * support_multiplier, centerline_radius),
+                shape,
+            ).astype(np.uint8)
 
     bundle_memberships: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     fibers_by_id = {
@@ -657,6 +681,7 @@ def morphology_targets_3d(
     individual_source_support = (semantic_class == 1).astype(np.uint8)
     bundle_source_support = (semantic_class == 2).astype(np.uint8)
     clump_source_support = (semantic_class == 3).astype(np.uint8)
+    uncertain_source_support = uncertain_raw.copy()
     uncertain = np.zeros(shape, dtype=np.uint8)
     if mark_transitions:
         clump_transition |= clump_halo.astype(np.uint8)
@@ -664,7 +689,8 @@ def morphology_targets_3d(
             (bundle_transition.astype(bool) | clump_transition.astype(bool))
             & (semantic_class > 0)
         ).astype(np.uint8)
-        semantic_class[uncertain.astype(bool)] = 255
+    uncertain |= (uncertain_source_support.astype(bool) & (semantic_class == 0)).astype(np.uint8)
+    semantic_class[uncertain.astype(bool)] = 255
     individual = (semantic_class == 1).astype(np.uint8)
     bundle = (semantic_class == 2).astype(np.uint8)
     clump = (semantic_class == 3).astype(np.uint8)
@@ -708,6 +734,7 @@ def morphology_targets_3d(
             "individual_filament_source_support_mask": individual_source_support,
             "bundle_source_support_mask": bundle_source_support,
             "clump_source_support_mask": clump_source_support,
+            "uncertain_ignore_source_support_mask": uncertain_source_support,
             "individual_filament_mask": individual,
             "bundle_mask": bundle,
             "clump_mask": clump,
@@ -973,6 +1000,7 @@ def splat_geometry_signal(
         "individual_filament": np.zeros((height, width), dtype=np.float32),
         "bundle": np.zeros((height, width), dtype=np.float32),
         "clump": np.zeros((height, width), dtype=np.float32),
+        "uncertain_ignore": np.zeros((height, width), dtype=np.float32),
     }
     weighted_depth = np.zeros((height, width), dtype=np.float64)
     weight_sum = np.zeros((height, width), dtype=np.float64)
@@ -1012,6 +1040,8 @@ def splat_geometry_signal(
             class_signal["individual_filament"] += unscaled_fiber_signal
         elif structure == "clump_fragment":
             class_signal["clump"] += unscaled_fiber_signal
+        elif structure == "uncertain_fragment":
+            class_signal["uncertain_ignore"] += unscaled_fiber_signal
         elif structure == "bundle_child":
             supervised = fiber.get(
                 "supervised_centerline_sample",
@@ -1086,6 +1116,9 @@ def splat_geometry_signal(
                 ).astype(np.float32),
                 "clump_signal": (
                     class_signal["clump"] * foreground_scale
+                ).astype(np.float32),
+                "uncertain_ignore_signal": (
+                    class_signal["uncertain_ignore"] * foreground_scale
                 ).astype(np.float32),
             }
             if "bundles" in geometry and "clumps" in geometry
@@ -1720,7 +1753,7 @@ def select_semantic_mask(arrays: dict[str, np.ndarray], config: dict[str, Any]) 
 def scenario_category(scenario: str, config: dict[str, Any] | None = None) -> str:
     if config and config.get("scenario_category"):
         value = str(config["scenario_category"])
-        if value not in {"structural_qa", "optical_qa", "realism_calibration", "clump_ignore_stress"}:
+        if value not in {"structural_qa", "optical_qa", "realism_calibration", "clump_ignore_stress", "uncertain_ignore_stress"}:
             raise ValueError(f"invalid scenario_category: {value}")
         return value
     if scenario in STRUCTURAL_QA_SCENARIOS:

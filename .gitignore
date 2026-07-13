@@ -39,6 +39,7 @@ credentials/
 runs/
 checkpoints/
 wandb/
+reports/
 **/wandb/
 .wandb/
 .wandb*/

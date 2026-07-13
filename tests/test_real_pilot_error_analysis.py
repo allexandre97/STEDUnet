@@ -2,6 +2,7 @@ import numpy as np
 
 from scripts.analyze_real_pilot_errors import (
     discover_eval_outputs,
+    has_batch_outputs,
     leakage_diagnostics,
     probability_summaries_by_target_region,
     semantic_error_analysis,
@@ -44,6 +45,16 @@ def test_discover_eval_outputs_supports_canonical_and_legacy_layouts(tmp_path):
     assert discover_eval_outputs(legacy) == [
         (legacy / "image_metrics.json", legacy / "image_predictions.npz", legacy)
     ]
+
+
+def test_has_batch_outputs_detects_sample_subdirectories(tmp_path):
+    sample = tmp_path / "sample_a"
+    sample.mkdir()
+    (sample / "metrics.json").write_text("{}", encoding="utf-8")
+    (sample / "predictions.npz").write_bytes(b"npz")
+
+    assert has_batch_outputs(tmp_path)
+    assert not has_batch_outputs(sample)
 
 
 def test_distance_tolerant_skeleton_recovery_counts_nearby_pixels():

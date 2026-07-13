@@ -258,12 +258,22 @@ def build_sample_morphology(
             "individual_filament_source_support_mask",
             "bundle_source_support_mask",
             "clump_source_support_mask",
+            "uncertain_ignore_source_support_mask",
             "fiber_structure_type",
             "fiber_parent_bundle_id",
             "fiber_parent_clump_id",
             "fiber_supervised_centerline_sample",
             "bundle_child_fiber_ids",
             "clump_fragment_fiber_ids",
+            "uncertain_family_code",
+            "uncertain_source_object_id",
+            "uncertain_target_role_code",
+            "uncertain_intensity_multiplier",
+            "uncertain_radius_multiplier",
+            "uncertain_blur_sigma_px",
+            "uncertain_adjacency_code",
+            "uncertain_support_radius_multiplier",
+            "uncertain_fragment_length_px",
             "latent_geometry_membership_y",
             "latent_geometry_membership_x",
             "latent_geometry_membership_instance_id",
@@ -293,6 +303,7 @@ def build_sample_morphology(
             "individual_filament_signal",
             "bundle_signal",
             "clump_signal",
+            "uncertain_ignore_signal",
             "total_clean_signal",
             "total_optical_signal",
             "core_signal",
@@ -320,12 +331,32 @@ def build_sample_morphology(
             "individual_filament_source_support_mask": True,
             "bundle_source_support_mask": True,
             "clump_source_support_mask": True,
+            "uncertain_ignore_source_support_mask": True,
         }
     )
     metadata["enum_mappings"].update(
         {
             "trace_termination_status": TRACE_TERMINATION_STATUS_CODES,
             "fiber_structure_type": FIBER_STRUCTURE_TYPE_CODES,
+            "uncertain_ignore_family": {
+                "faint_fragments": 1,
+                "defocused_streaks": 2,
+                "low_snr_anisotropic_fragments": 3,
+                "merged_boundary_filaments": 4,
+                "dense_overlapping_filaments": 5,
+                "bundle_clump_transition": 6,
+                "clump_halo_texture": 7,
+                "short_discontinuous_fragments": 8,
+                "weak_directional_texture": 9,
+                "ambiguous_thick_bundle_edges": 10,
+                "filamentous_fluff": 11,
+            },
+            "uncertain_ignore_adjacency": {
+                "isolated": 1,
+                "fibrous_adjacent": 2,
+                "clump_adjacent": 3,
+                "bundle_adjacent": 4,
+            },
             "boundary_bit": BOUNDARY_CODES,
         }
     )
@@ -1076,6 +1107,7 @@ def validate_3d_arrays(sample_id: str, arrays: dict[str, np.ndarray], metadata: 
                 "optical_qa",
                 "realism_calibration",
                 "clump_ignore_stress",
+                "uncertain_ignore_stress",
             }:
                 errors.append(f"{sample_id}: invalid scenario_category")
             expected_optional = {
@@ -1307,6 +1339,7 @@ def validate_schema08_apparent_masks(
         "individual_filament_source_support_mask",
         "bundle_source_support_mask",
         "clump_source_support_mask",
+        "uncertain_ignore_source_support_mask",
     ]:
         if name not in arrays:
             errors.append(f"{sample_id}: missing source-support mask {name}")
@@ -1331,9 +1364,20 @@ def validate_schema08_apparent_masks(
         "individual_filament_source_support_mask",
         "bundle_source_support_mask",
         "clump_source_support_mask",
+        "uncertain_ignore_source_support_mask",
     ]:
         if name in supervised or name not in latent:
             errors.append(f"{sample_id}: {name} must be latent, not supervised")
+    if np.any(arrays["uncertain_ignore_mask"] & arrays["individual_filament_mask"]):
+        errors.append(f"{sample_id}: uncertain_ignore overlaps individual_filament")
+    if np.any(arrays["uncertain_ignore_mask"] & arrays["bundle_mask"]):
+        errors.append(f"{sample_id}: uncertain_ignore overlaps bundle")
+    if np.any(arrays["uncertain_ignore_mask"] & arrays["clump_mask"]):
+        errors.append(f"{sample_id}: uncertain_ignore overlaps clump")
+    if np.any(arrays["filament_centerline_mask"] & arrays["uncertain_ignore_mask"]):
+        errors.append(f"{sample_id}: filament centerline overlaps uncertain_ignore")
+    if np.any(arrays["bundle_axis_mask"] & arrays["uncertain_ignore_mask"]):
+        errors.append(f"{sample_id}: bundle axis overlaps uncertain_ignore")
 
     report = metadata.get("rendering_report", {})
     rule = report.get("apparent_mask_rule", {})
@@ -1370,21 +1414,31 @@ def expected_apparent_semantic(
         "individual_filament": arrays["individual_filament_source_support_mask"].astype(bool),
         "bundle": arrays["bundle_source_support_mask"].astype(bool),
         "clump": arrays["clump_source_support_mask"].astype(bool),
+        "uncertain_ignore": arrays.get(
+            "uncertain_ignore_source_support_mask",
+            np.zeros_like(arrays["semantic_class_mask"]),
+        ).astype(bool),
     }
     signals = {
         "individual_filament": arrays["individual_filament_signal"],
         "bundle": arrays["bundle_signal"],
         "clump": arrays["clump_signal"],
+        "uncertain_ignore": arrays.get(
+            "uncertain_ignore_signal",
+            np.zeros_like(arrays["semantic_class_mask"], dtype=np.float32),
+        ),
     }
     high = {
         name: (signals[name] >= high_threshold) & region(mask)
         for name, mask in sources.items()
+        if name != "uncertain_ignore"
     }
     low = {
         name: (signals[name] >= low_threshold)
         & (signals[name] < high_threshold)
         & region(mask)
         for name, mask in sources.items()
+        if name != "uncertain_ignore"
     }
     semantic = np.zeros_like(arrays["semantic_class_mask"], dtype=np.uint8)
     semantic[high["individual_filament"]] = 1
@@ -1401,6 +1455,7 @@ def expected_apparent_semantic(
         | arrays.get("clump_transition_mask", 0)
     ) & source_union
     uncertain |= np.asarray(transition).astype(bool)
+    uncertain |= sources["uncertain_ignore"] & (semantic == 0)
     semantic[uncertain] = 255
     return semantic
 
@@ -1602,7 +1657,11 @@ def validate_corrected_morphology_semantics(
     if not np.allclose(
         arrays["individual_filament_signal"]
         + arrays["bundle_signal"]
-        + arrays["clump_signal"],
+        + arrays["clump_signal"]
+        + arrays.get(
+            "uncertain_ignore_signal",
+            np.zeros_like(arrays["clump_signal"], dtype=np.float32),
+        ),
         arrays["total_clean_signal"],
         atol=1e-4,
     ):

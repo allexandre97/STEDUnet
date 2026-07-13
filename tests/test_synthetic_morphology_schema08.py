@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from fibras.synthetic.rasterizer3d import finalize_morphology_apparent_targets
 from fibras.synthetic.real_compatible import build_real_compatible_targets
@@ -68,6 +69,8 @@ def test_schema08_is_emitted_for_new_morphology_samples():
 
 def test_schema07_examples_remain_readable():
     dataset = Path("examples/sted_blank_composites_morphology_review")
+    if not (dataset / "dataset_manifest.csv").exists():
+        pytest.skip("optional local schema-0.7 morphology example fixture is absent")
     with (dataset / "dataset_manifest.csv").open(newline="", encoding="utf-8") as f:
         row = next(csv.DictReader(f))
     npz_name = row["npz_path"]

@@ -117,6 +117,10 @@ def validate_real_compatible_targets(
         errors.append(f"{sample_id}: real-compatible skeleton overlaps clump")
     if np.any(arrays["real_compatible_skeleton_mask"] & arrays["real_compatible_uncertain_ignore_mask"]):
         errors.append(f"{sample_id}: real-compatible skeleton overlaps uncertain_ignore")
+    if np.any(arrays["real_compatible_fibrous_mask"] & arrays["real_compatible_uncertain_ignore_mask"]):
+        errors.append(f"{sample_id}: real-compatible fibrous overlaps uncertain_ignore")
+    if np.any(arrays["real_compatible_clump_mask"] & arrays["real_compatible_uncertain_ignore_mask"]):
+        errors.append(f"{sample_id}: real-compatible clump overlaps uncertain_ignore")
     if metadata is not None:
         roles = metadata.get("target_roles", {})
         real_targets = set(roles.get("real_compatible_supervised", []))

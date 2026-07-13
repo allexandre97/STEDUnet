@@ -78,6 +78,7 @@ FIBER_STRUCTURE_TYPE_CODES = {
     "individual_filament": 1,
     "bundle_child": 2,
     "clump_fragment": 3,
+    "uncertain_fragment": 4,
 }
 
 BOUNDARY_CODES = {
@@ -273,6 +274,17 @@ REQUIRED_ARRAYS_3D_MORPHOLOGY = REQUIRED_ARRAYS_3D_MORPHOLOGY_0_7 | {
     "real_compatible_clump_mask",
     "real_compatible_uncertain_ignore_mask",
     "real_compatible_skeleton_mask",
+    "uncertain_ignore_source_support_mask",
+    "uncertain_ignore_signal",
+    "uncertain_family_code",
+    "uncertain_source_object_id",
+    "uncertain_target_role_code",
+    "uncertain_intensity_multiplier",
+    "uncertain_radius_multiplier",
+    "uncertain_blur_sigma_px",
+    "uncertain_adjacency_code",
+    "uncertain_support_radius_multiplier",
+    "uncertain_fragment_length_px",
 }
 
 REQUIRED_ARRAYS_BY_SCHEMA = {

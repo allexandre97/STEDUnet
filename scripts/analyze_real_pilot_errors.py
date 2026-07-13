@@ -43,7 +43,7 @@ THRESHOLDS = (0.5, 0.75, 0.85)
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.batch:
+        if args.batch or has_batch_outputs(args.eval_dir):
             summary = analyze_batch_outputs(
                 args.eval_dir, args.out, args.synthetic_manifest, args.max_synthetic_samples
             )
@@ -66,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-synthetic-samples", type=int, default=64)
     parser.add_argument("--batch", action="store_true", help="Analyze each immediate sample subdirectory under --eval-dir.")
     return parser
+
+
+def has_batch_outputs(eval_dir: Path) -> bool:
+    return eval_dir.exists() and any(
+        child.is_dir() and discover_eval_outputs(child)
+        for child in sorted(eval_dir.iterdir())
+    )
 
 
 def analyze_outputs(eval_dir: Path, synthetic_manifest: Path, max_synthetic_samples: int = 64) -> dict[str, Any]:

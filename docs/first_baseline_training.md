@@ -82,6 +82,42 @@ conda run --no-capture-output -n fibras python scripts/train_first_baseline.py \
 
 Panel and checkpoint uploads are off by default. Add `--wandb-log-panels` to upload the final validation QA panels, and `--wandb-log-checkpoints` to upload the final `model.pt` checkpoint.
 
+## Optional Real-Crop Fine-Tuning Hooks
+
+Synthetic-only training remains the default. To prepare expert-annotated real crops from image, label, and JFilament snake triplets, first build a real crop manifest:
+
+```bash
+python scripts/build_real_annotation_crops.py \
+  --manifest path/to/real_annotation_triplets.csv \
+  --out runs/real_annotation_crops \
+  --output-manifest data_manifests/real_crops.csv \
+  --crop-size 128 \
+  --stride 128
+```
+
+Use `--leave-one-out-image SAMPLE_ID` to assign that whole source image to validation and all other source images to train. Crops from the same source image are never split across train, validation, or test.
+
+Mixed synthetic and real training is opt-in:
+
+```bash
+python scripts/train_first_baseline.py \
+  --manifest data_manifests/training_v0_schema08.csv \
+  --real-manifest runs/real_annotation_crops/real_crop_manifest.csv \
+  --synthetic-real-ratio 80:20 \
+  --init-checkpoint runs/first_baseline_schema08_v1b_60ep_wandb/model.pt \
+  --out runs/first_baseline_mixed_smoke
+```
+
+Add `--enable-uncertainty-head --lambda-uncertainty 0.1` to supervise `uncertain_ignore` as an auxiliary target. Without those flags, `uncertain_ignore` pixels remain excluded from semantic and skeleton losses and the model stays on the original 3-class semantic plus skeleton path.
+
+Synthetic bundle diagnostics can be generated without training:
+
+```bash
+python scripts/build_synthetic_bundle_diagnostics.py \
+  --manifest data_manifests/training_v1b_schema08.csv \
+  --out reports/synthetic_bundle_diagnostics
+```
+
 ## W&B Offline Tracking
 
 Offline mode records a local W&B run without requiring login or network access during training:

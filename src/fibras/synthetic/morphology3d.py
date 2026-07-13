@@ -19,10 +19,33 @@ from .geometry3d import (
 )
 from .schema import (
     BOUNDARY_CODES,
-    FIBER_STRUCTURE_TYPE_CODES,
+FIBER_STRUCTURE_TYPE_CODES,
     NODE_TYPES,
     TRACE_TERMINATION_STATUS_CODES,
 )
+
+UNCERTAIN_FAMILY_CODES = {
+    "faint_fragments": 1,
+    "defocused_streaks": 2,
+    "low_snr_anisotropic_fragments": 3,
+    "merged_boundary_filaments": 4,
+    "dense_overlapping_filaments": 5,
+    "bundle_clump_transition": 6,
+    "clump_halo_texture": 7,
+    "short_discontinuous_fragments": 8,
+    "weak_directional_texture": 9,
+    "ambiguous_thick_bundle_edges": 10,
+    "filamentous_fluff": 11,
+}
+
+UNCERTAIN_ADJACENCY_CODES = {
+    "isolated": 1,
+    "fibrous_adjacent": 2,
+    "clump_adjacent": 3,
+    "bundle_adjacent": 4,
+}
+
+UNCERTAIN_TARGET_ROLE_CODE = 255
 
 
 SCENE_MODES = {
@@ -222,6 +245,24 @@ def generate_morphology_geometry(
             diagnostics=diagnostics,
             max_attempts=max_attempts,
         )
+    uncertain_count, uncertain_family_counts = add_uncertain_ignore_components(
+        fibers,
+        nodes,
+        edges,
+        bundles,
+        clumps,
+        domains,
+        config,
+        mode,
+        width,
+        height,
+        depth,
+        focal_z,
+        sample_index,
+        base_seed,
+        max_attempts,
+        diagnostics,
+    )
     return {
         "image_shape": (height, width),
         "volume_depth_px": depth,
@@ -245,6 +286,8 @@ def generate_morphology_geometry(
             "individual_filament_count": individual_count,
             "bundle_count": bundle_count,
             "clump_count": clump_count,
+            "uncertain_ignore_component_count": uncertain_count,
+            "uncertain_ignore_family_counts": uncertain_family_counts,
             "domain_count": len(domains),
             "invalid_geometry_candidate_count": diagnostics["invalid_geometry_candidate_count"],
             "invalid_bundle_child_count": diagnostics["invalid_bundle_child_count"],
@@ -473,6 +516,7 @@ def append_fiber(
     supervised_samples: np.ndarray | None = None,
     start_status: str = "valid_endpoint",
     end_status: str = "valid_endpoint",
+    extra: dict[str, Any] | None = None,
 ) -> int:
     smooth = smooth_catmull_rom(
         raw, int(geometry_config.get("spline_samples_per_segment", 6))
@@ -562,8 +606,7 @@ def append_fiber(
             },
         ]
     )
-    fibers.append(
-        {
+    record = {
             "fiber_id": fid,
             "raw_vertices_xyz": raw.astype(np.float32),
             "points_xyz": points.astype(np.float32),
@@ -581,7 +624,9 @@ def append_fiber(
             "start_boundary_code": boundary_code(start_boundary),
             "end_boundary_code": boundary_code(end_boundary),
         }
-    )
+    if extra:
+        record.update(extra)
+    fibers.append(record)
     edges.append(
         {
             "fiber_id": fid,
@@ -594,6 +639,373 @@ def append_fiber(
         }
     )
     return fid
+
+
+def add_uncertain_ignore_components(
+    fibers: list[dict[str, Any]],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
+    clumps: list[dict[str, Any]],
+    domains: list[dict[str, Any]],
+    config: dict[str, Any],
+    mode: str,
+    width: int,
+    height: int,
+    depth: float,
+    focal_z: float,
+    sample_index: int,
+    base_seed: int,
+    max_attempts: int,
+    diagnostics: dict[str, int],
+) -> tuple[int, dict[str, int]]:
+    uncertain_config = config.get("uncertain_ignore", {})
+    if not uncertain_config.get("enabled", False):
+        return 0, {}
+    families = uncertain_config.get("families", {})
+    total = 0
+    counts: dict[str, int] = {}
+    for family in sorted(families):
+        family_config = families[family]
+        if family not in UNCERTAIN_FAMILY_CODES or not family_config.get("enabled", True):
+            continue
+        count = _integer_range(
+            np.random.default_rng(base_seed + sample_index + UNCERTAIN_FAMILY_CODES[family]),
+            _mode_value(family_config, "count_range", mode, family_config.get("count_range", [0, 0])),
+        )
+        counts[family] = count
+        if family == "filamentous_fluff":
+            total += add_uncertain_fluff_patches(
+                count,
+                fibers,
+                nodes,
+                edges,
+                bundles,
+                clumps,
+                domains,
+                family_config,
+                config,
+                mode,
+                width,
+                height,
+                depth,
+                focal_z,
+                sample_index,
+                base_seed,
+                diagnostics,
+            )
+            continue
+        for index in range(count):
+            for attempt in range(max_attempts):
+                rng = candidate_rng(base_seed, sample_index, f"uncertain_{family}", index, attempt)
+                raw, adjacency, source_id = uncertain_fragment_vertices(
+                    family,
+                    family_config,
+                    domains,
+                    bundles,
+                    clumps,
+                    config,
+                    mode,
+                    rng,
+                    width,
+                    height,
+                    depth,
+                    focal_z,
+                )
+                try:
+                    length = polyline_length(raw)
+                    intensity = uncertain_intensity_config(family_config, config.get("intensity_variation", {}), rng)
+                    append_fiber(
+                        fibers,
+                        nodes,
+                        edges,
+                        raw,
+                        config["geometry"],
+                        intensity,
+                        rng,
+                        structure_type="uncertain_fragment",
+                        supervised_samples=np.zeros(len(raw), dtype=bool),
+                        start_status="ambiguous_termination",
+                        end_status="ambiguous_termination",
+                        extra={
+                            "uncertain_family": family,
+                            "uncertain_family_code": UNCERTAIN_FAMILY_CODES[family],
+                            "uncertain_source_object_id": source_id,
+                            "uncertain_target_role_code": UNCERTAIN_TARGET_ROLE_CODE,
+                            "uncertain_intensity_multiplier": float(intensity["_uncertain_intensity_multiplier"]),
+                            "uncertain_radius_multiplier": float(intensity["_uncertain_radius_multiplier"]),
+                            "uncertain_blur_sigma_px": float(family_config.get("blur_sigma_px", 0.0)),
+                            "uncertain_support_radius_multiplier": float(family_config.get("support_radius_multiplier", 1.0)),
+                            "uncertain_adjacency": adjacency,
+                            "uncertain_adjacency_code": UNCERTAIN_ADJACENCY_CODES[adjacency],
+                            "uncertain_fragment_length_px": float(length),
+                        },
+                    )
+                    diagnostics["resample_attempt_count"] += attempt
+                    total += 1
+                    break
+                except ValueError as exc:
+                    if "no valid in-volume segment" not in str(exc):
+                        raise
+                    diagnostics["invalid_geometry_candidate_count"] += 1
+                    diagnostics["invalid_filament_count"] += 1
+            else:
+                diagnostics["skipped_candidate_count"] += 1
+    return total, counts
+
+
+def add_uncertain_fluff_patches(
+    patch_count: int,
+    fibers: list[dict[str, Any]],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
+    clumps: list[dict[str, Any]],
+    domains: list[dict[str, Any]],
+    family_config: dict[str, Any],
+    config: dict[str, Any],
+    mode: str,
+    width: int,
+    height: int,
+    depth: float,
+    focal_z: float,
+    sample_index: int,
+    base_seed: int,
+    diagnostics: dict[str, int],
+) -> int:
+    total = 0
+    for patch_index in range(patch_count):
+        patch_rng = candidate_rng(base_seed, sample_index, "uncertain_filamentous_fluff_patch", patch_index, 0)
+        adjacency = str(family_config.get("adjacency", "mixed"))
+        if adjacency == "mixed":
+            adjacency = str(patch_rng.choice(["isolated", "fibrous_adjacent", "clump_adjacent", "bundle_adjacent"]))
+        center, tangent, source_id = uncertain_anchor(
+            adjacency, domains, bundles, clumps, config, mode, patch_rng, width, height, depth, focal_z
+        )
+        radius = np.asarray(
+            [
+                _uniform(patch_rng, family_config.get("radius_x_range_px", [42.0, 96.0])),
+                _uniform(patch_rng, family_config.get("radius_y_range_px", [24.0, 72.0])),
+            ],
+            dtype=np.float64,
+        )
+        angle = float(math.atan2(float(tangent[1]), float(tangent[0]))) if np.linalg.norm(tangent[:2]) > 1e-8 else float(patch_rng.uniform(0, math.pi))
+        fragment_count = _integer_range(patch_rng, family_config.get("fragment_count_range", [20, 60]))
+        alignment = float(family_config.get("alignment_strength", 0.35))
+        for fragment_index in range(fragment_count):
+            rng = candidate_rng(base_seed, sample_index, f"uncertain_filamentous_fluff_{patch_index}", fragment_index, 0)
+            local = sample_fluff_local(rng, radius, angle)
+            start = center.astype(np.float64) + np.asarray([local[0], local[1], rng.normal(0, float(family_config.get("z_jitter_px", 5.0)))])
+            start = np.clip(start, [0, 0, 0], [width - 1, height - 1, depth])
+            theta = angle + rng.normal(0, float(family_config.get("orientation_jitter_rad", 0.9)))
+            aligned = np.asarray([math.cos(theta), math.sin(theta), rng.normal(0, 0.08)], dtype=np.float64)
+            direction = (1 - alignment) * _random_unit(rng) + alignment * aligned
+            direction /= max(float(np.linalg.norm(direction)), 1e-8)
+            raw, length = fluff_fragment_vertices(start, direction, family_config, config, rng, width, height, depth)
+            try:
+                intensity = uncertain_intensity_config(family_config, config.get("intensity_variation", {}), rng)
+                append_fiber(
+                    fibers,
+                    nodes,
+                    edges,
+                    raw,
+                    config["geometry"],
+                    intensity,
+                    rng,
+                    structure_type="uncertain_fragment",
+                    supervised_samples=np.zeros(len(raw), dtype=bool),
+                    start_status="ambiguous_termination",
+                    end_status="ambiguous_termination",
+                    extra={
+                        "uncertain_family": "filamentous_fluff",
+                        "uncertain_family_code": UNCERTAIN_FAMILY_CODES["filamentous_fluff"],
+                        "uncertain_source_object_id": patch_index + 1,
+                        "uncertain_target_role_code": UNCERTAIN_TARGET_ROLE_CODE,
+                        "uncertain_intensity_multiplier": float(intensity["_uncertain_intensity_multiplier"]),
+                        "uncertain_radius_multiplier": float(intensity["_uncertain_radius_multiplier"]),
+                        "uncertain_blur_sigma_px": float(family_config.get("blur_sigma_px", 0.0)),
+                        "uncertain_support_radius_multiplier": float(family_config.get("support_radius_multiplier", 3.0)),
+                        "uncertain_adjacency": adjacency,
+                        "uncertain_adjacency_code": UNCERTAIN_ADJACENCY_CODES.get(adjacency, UNCERTAIN_ADJACENCY_CODES["isolated"]),
+                        "uncertain_fragment_length_px": float(length),
+                    },
+                )
+                total += 1
+            except ValueError as exc:
+                if "no valid in-volume segment" not in str(exc):
+                    raise
+                diagnostics["invalid_geometry_candidate_count"] += 1
+                diagnostics["invalid_filament_count"] += 1
+    return total
+
+
+def sample_fluff_local(rng: np.random.Generator, radius: np.ndarray, angle: float) -> np.ndarray:
+    r = math.sqrt(float(rng.random()))
+    theta = float(rng.uniform(0, 2 * math.pi))
+    local = r * np.asarray([math.cos(theta) * radius[0], math.sin(theta) * radius[1]])
+    c, s = math.cos(angle), math.sin(angle)
+    return np.asarray([c * local[0] - s * local[1], s * local[0] + c * local[1]])
+
+
+def fluff_fragment_vertices(
+    start: np.ndarray,
+    direction: np.ndarray,
+    family_config: dict[str, Any],
+    config: dict[str, Any],
+    rng: np.random.Generator,
+    width: int,
+    height: int,
+    depth: float,
+) -> tuple[np.ndarray, float]:
+    length = _uniform(rng, family_config.get("length_range_px", [8.0, 36.0]))
+    step = float(family_config.get("step_length_px", 4.0))
+    persistence = _uniform(rng, family_config.get("persistence_length_range_px", [10.0, 55.0]))
+    corr = float(np.exp(-step / max(persistence, 1e-6)))
+    points = [start.astype(np.float64)]
+    for _ in range(max(2, int(math.ceil(length / step)))):
+        direction = _persistent_tangent(direction, corr, rng)
+        candidate = points[-1] + direction * step
+        candidate, direction, stop = _handle_boundary(
+            candidate,
+            direction,
+            width,
+            height,
+            depth,
+            config["geometry"].get("boundary_mode", "reflect"),
+        )
+        points.append(candidate.copy())
+        if stop:
+            break
+    raw = np.asarray(points, dtype=np.float32)
+    return raw, polyline_length(raw)
+
+
+def uncertain_fragment_vertices(
+    family: str,
+    family_config: dict[str, Any],
+    domains: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
+    clumps: list[dict[str, Any]],
+    config: dict[str, Any],
+    mode: str,
+    rng: np.random.Generator,
+    width: int,
+    height: int,
+    depth: float,
+    focal_z: float,
+) -> tuple[np.ndarray, str, int]:
+    adjacency = str(family_config.get("adjacency", default_uncertain_adjacency(family)))
+    anchor, tangent, source_id = uncertain_anchor(
+        adjacency, domains, bundles, clumps, config, mode, rng, width, height, depth, focal_z
+    )
+    if family in {"defocused_streaks", "ambiguous_thick_bundle_edges"}:
+        anchor[2] = np.clip(focal_z + rng.choice([-1, 1]) * _uniform(rng, family_config.get("defocus_offset_range_px", [12, 28])), 0, depth)
+    length = _uniform(rng, family_config.get("length_range_px", [18, 80]))
+    step = float(family_config.get("step_length_px", config["geometry"].get("step_length_px", 6.0)))
+    persistence = _uniform(rng, family_config.get("persistence_length_range_px", [18, 120]))
+    corr = float(np.exp(-step / max(persistence, 1e-6)))
+    points = [anchor.astype(np.float64)]
+    direction = tangent.astype(np.float64) / max(float(np.linalg.norm(tangent)), 1e-8)
+    incoherence = float(family_config.get("direction_jitter", 0.25))
+    for i in range(max(2, int(math.ceil(length / step)))):
+        if family in {"low_snr_anisotropic_fragments", "weak_directional_texture"} and i % 3 == 0:
+            direction = (1 - incoherence) * direction + incoherence * _random_unit(rng)
+            direction /= max(float(np.linalg.norm(direction)), 1e-8)
+        else:
+            direction = _persistent_tangent(direction, corr, rng)
+        candidate = points[-1] + direction * step
+        candidate, direction, stop = _handle_boundary(
+            candidate,
+            direction,
+            width,
+            height,
+            depth,
+            config["geometry"].get("boundary_mode", "reflect"),
+        )
+        points.append(candidate.copy())
+        if stop:
+            break
+    return np.asarray(points, dtype=np.float32), adjacency, source_id
+
+
+def default_uncertain_adjacency(family: str) -> str:
+    if family in {"merged_boundary_filaments", "bundle_clump_transition", "clump_halo_texture"}:
+        return "clump_adjacent"
+    if family == "ambiguous_thick_bundle_edges":
+        return "bundle_adjacent"
+    if family in {"defocused_streaks", "dense_overlapping_filaments"}:
+        return "fibrous_adjacent"
+    return "isolated"
+
+
+def uncertain_anchor(
+    adjacency: str,
+    domains: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
+    clumps: list[dict[str, Any]],
+    config: dict[str, Any],
+    mode: str,
+    rng: np.random.Generator,
+    width: int,
+    height: int,
+    depth: float,
+    focal_z: float,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    if adjacency == "clump_adjacent" and clumps:
+        clump = clumps[int(rng.integers(0, len(clumps)))]
+        angle = rng.uniform(0, 2 * math.pi)
+        radius = clump["radius_xyz"].astype(np.float64)
+        normal = np.asarray([math.cos(angle), math.sin(angle), rng.normal(0, 0.08)])
+        normal /= max(float(np.linalg.norm(normal)), 1e-8)
+        center = clump["center_xyz"].astype(np.float64)
+        anchor = center + normal * radius * rng.uniform(0.85, 1.35)
+        tangent = np.asarray([-normal[1], normal[0], rng.normal(0, 0.08)])
+        return anchor, tangent, int(clump["clump_id"])
+    if adjacency == "bundle_adjacent" and bundles:
+        bundle = bundles[int(rng.integers(0, len(bundles)))]
+        axis = bundle["axis_points_xyz"]
+        i = int(rng.integers(0, len(axis)))
+        tangent = axis[min(i + 1, len(axis) - 1)] - axis[max(i - 1, 0)]
+        normal = np.asarray([-tangent[1], tangent[0], 0.0], dtype=np.float64)
+        normal /= max(float(np.linalg.norm(normal)), 1e-8)
+        anchor = axis[i].astype(np.float64) + normal * float(bundle["axis_radius_px"][i]) * rng.uniform(0.8, 1.4)
+        return anchor, tangent, int(bundle["bundle_id"])
+    start, tangent = sample_start_tangent(domains, config.get("scene_morphology", {}), mode, rng, width, height, depth, focal_z)
+    return start, tangent, 0
+
+
+def uncertain_intensity_config(
+    family_config: dict[str, Any],
+    base_config: dict[str, Any],
+    rng: np.random.Generator,
+) -> dict[str, Any]:
+    out = dict(base_config)
+    amp = _uniform(rng, family_config.get("intensity_multiplier_range", [0.15, 0.75]))
+    radius = _uniform(rng, family_config.get("radius_multiplier_range", [0.8, 2.4]))
+    out["_uncertain_intensity_multiplier"] = amp
+    out["_uncertain_radius_multiplier"] = radius
+    if "base_amplitude_range" in out:
+        out["base_amplitude_range"] = [float(v) * amp for v in out["base_amplitude_range"]]
+    if "radius_range_px" in out:
+        out["radius_range_px"] = [float(v) * radius for v in out["radius_range_px"]]
+    for key in [
+        "gap_probability",
+        "gap_length_range_px",
+        "gap_residual_fraction",
+        "max_gaps_per_fiber",
+        "punctate_probability",
+        "variation_amplitude",
+        "radius_variation_amplitude",
+    ]:
+        if key in family_config:
+            out[key] = family_config[key]
+    return out
+
+
+def polyline_length(points: np.ndarray) -> float:
+    if len(points) < 2:
+        return 0.0
+    return float(np.linalg.norm(np.diff(points.astype(np.float64), axis=0), axis=1).sum())
 
 
 def corrected_endpoint_status(
@@ -1250,6 +1662,42 @@ def morphology_geometry_to_arrays(
                     for edge in geometry["edges"]
                 ],
                 dtype=np.int16,
+            ),
+            "uncertain_family_code": np.asarray(
+                [fiber.get("uncertain_family_code", 0) for fiber in fibers],
+                dtype=np.uint8,
+            ),
+            "uncertain_source_object_id": np.asarray(
+                [fiber.get("uncertain_source_object_id", 0) for fiber in fibers],
+                dtype=np.int32,
+            ),
+            "uncertain_target_role_code": np.asarray(
+                [fiber.get("uncertain_target_role_code", 0) for fiber in fibers],
+                dtype=np.uint8,
+            ),
+            "uncertain_intensity_multiplier": np.asarray(
+                [fiber.get("uncertain_intensity_multiplier", 0.0) for fiber in fibers],
+                dtype=np.float32,
+            ),
+            "uncertain_radius_multiplier": np.asarray(
+                [fiber.get("uncertain_radius_multiplier", 0.0) for fiber in fibers],
+                dtype=np.float32,
+            ),
+            "uncertain_blur_sigma_px": np.asarray(
+                [fiber.get("uncertain_blur_sigma_px", 0.0) for fiber in fibers],
+                dtype=np.float32,
+            ),
+            "uncertain_adjacency_code": np.asarray(
+                [fiber.get("uncertain_adjacency_code", 0) for fiber in fibers],
+                dtype=np.uint8,
+            ),
+            "uncertain_support_radius_multiplier": np.asarray(
+                [fiber.get("uncertain_support_radius_multiplier", 0.0) for fiber in fibers],
+                dtype=np.float32,
+            ),
+            "uncertain_fragment_length_px": np.asarray(
+                [fiber.get("uncertain_fragment_length_px", 0.0) for fiber in fibers],
+                dtype=np.float32,
             ),
         }
     )
