@@ -39,7 +39,7 @@ SYNTHETIC_TO_REAL_COMPATIBLE = {
 
 def build_real_annotation_sample(
     image_path: str | Path,
-    snakes_path: str | Path,
+    snakes_path: str | Path | None,
     labels_path: str | Path,
     *,
     skeleton_radius_px: float = 0.75,
@@ -53,7 +53,7 @@ def build_real_annotation_sample(
             f"{labels.image_shape}"
         )
 
-    points = parse_jfilament_snakes(snakes_path)
+    points = parse_jfilament_snakes(snakes_path) if snakes_path is not None else []
     grouped = group_snake_points(points)
     skeleton = np.zeros(labels.image_shape, dtype=np.uint8)
     all_snakes = np.zeros(labels.image_shape, dtype=np.uint8)
@@ -64,9 +64,15 @@ def build_real_annotation_sample(
         mask = rasterize_snake(xy, labels.image_shape, skeleton_radius_px)
         all_snakes[mask] = 1
         quality = classify_snake_mask(snake_id, mask, labels.semantic_mask, usable_threshold)
+        quality["accepted_pixels_before_clip"] = int(mask.sum()) if quality["usable_fibrous_skeleton"] else 0
+        quality["clipped_nonfibrous_pixels"] = (
+            int(np.count_nonzero(mask & (labels.semantic_mask != 1)))
+            if quality["usable_fibrous_skeleton"]
+            else 0
+        )
         flags.append(quality)
         if quality["usable_fibrous_skeleton"]:
-            skeleton[mask] = 1
+            skeleton[mask & (labels.semantic_mask == 1)] = 1
 
     xy, offsets, ids = snake_arrays(grouped)
     return {
@@ -77,13 +83,20 @@ def build_real_annotation_sample(
         "real_clump_mask": (labels.semantic_mask == 3).astype(np.uint8),
         "real_uncertain_ignore_mask": (labels.semantic_mask == 255).astype(np.uint8),
         "real_skeleton_mask": skeleton,
+        "real_skeleton_valid_mask": np.full(
+            labels.image_shape,
+            bool(points),
+            dtype=np.uint8,
+        )
+        * (labels.semantic_mask != 255),
         "real_all_snakes_mask": all_snakes,
         "real_snake_points_xy": xy,
         "real_snake_point_offsets": offsets,
         "real_snake_ids": ids,
         "metadata": {
             "image_path": str(image_path),
-            "snakes_path": str(snakes_path),
+            "snakes_path": str(snakes_path) if snakes_path is not None else None,
+            "skeleton_annotation_available": bool(points),
             "labels_path": str(labels_path),
             "image_shape": list(labels.image_shape),
             "label_names_found": labels.label_names,

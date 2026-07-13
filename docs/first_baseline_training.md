@@ -88,16 +88,20 @@ Synthetic-only training remains the default. To prepare expert-annotated real cr
 
 ```bash
 python scripts/build_real_annotation_crops.py \
-  --manifest path/to/real_annotation_triplets.csv \
+  --manifest data_manifests/real_annotations.csv \
+  --image-root /ssd/STED_dataset/data \
+  --annotation-root /cephfs/mhuang/STED_dataset/manual_annotations \
   --out runs/real_annotation_crops \
   --output-manifest data_manifests/real_crops.csv \
   --crop-size 128 \
   --stride 128
 ```
 
-Use `--leave-one-out-image SAMPLE_ID` to assign that whole source image to validation and all other source images to train. Crops from the same source image are never split across train, validation, or test.
+Inventory-backed crops inherit their parent image and `experimental_group_id` split. Legacy `--leave-one-out-image SAMPLE_ID` mode holds out the selected image's entire split group, not only that image. Crops are never assigned independently.
 
 Mixed synthetic and real training is opt-in:
+
+For leakage-safe grouped cross-validation and two-stage fine-tuning, use the fixed `real_annotation_folds_v1.csv` workflow in `docs/real_finetuning_cross_validation.md`. Real validation checkpoint selection is macro-averaged per parent image; outer test rows are not used during training.
 
 ```bash
 python scripts/train_first_baseline.py \

@@ -26,7 +26,16 @@ These real labels are remapped to the internal real-compatible class vocabulary:
 | 2 | `uncertain_ignore` | 255 | `uncertain_ignore` |
 | 3 | `clump` | 3 | `clump` |
 
+When source Labkit regions overlap, `uncertain_ignore` has explicit precedence over
+both `fibers` and `clump`. This expert-adjudicated rule is applied independently of
+the label order stored in the `.labeling` file. A `fibers`/`clump` overlap that is
+not covered by `uncertain_ignore` remains invalid and requires manual resolution.
+
 JFilament exports one `.txt` file containing all snakes for an image. Real snakes are fibrous skeletons or bundle axes; they are not guaranteed individual-filament centerlines. They may be used as real-compatible fibrous skeleton supervision only when their rasterized support overlaps mostly with the `fibrous_tau` semantic mask. Snakes mostly in `clump`, `uncertain_ignore`, or `background`, or with mixed overlap, are flagged rather than used as confident skeleton supervision.
+
+Accepted snakes are clipped to confidently fibrous pixels before becoming a target. Their pre-clip non-fibrous support is retained as an audit statistic. If no trace file or no trace points are available, skeleton-valid support is empty; an all-zero skeleton must not be interpreted as an exhaustive negative annotation. Skeleton-valid support always excludes `uncertain_ignore`.
+
+Real full-image splits are assigned at `experimental_group_id`, never per crop. `PN###` remains `culture_id`, not a biological replicate identifier. The current experimental-group grouping is provisional until biological preparation or replicate identifiers are supplied; all crops inherit both split and split-group identity from their parent image.
 
 Crossing points, merge points, branch points, endpoints, and bundle-entry labels are not supervised real labels. Any topology beyond the expert snakes is synthetic-only or post-processing-derived.
 

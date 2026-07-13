@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from fibras.annotations import build_real_annotation_sample
+from fibras.training.real_crops import read_real_annotation_manifest
 from scripts.analyze_real_pilot_errors import (
     THRESHOLDS,
     image_intensity_stats,
@@ -55,6 +56,13 @@ SUMMARY_COLUMNS = [
     "false_negative_fibrous_pixels",
     "clump_dice",
     "clump_target_pixels",
+    "fibrous_inside_target_clump_fraction",
+    "fibrous_inside_uncertain_ignore_fraction",
+    "clump_inside_target_fibrous_fraction",
+    "skeleton_inside_target_clump_fraction_0.75",
+    "skeleton_inside_uncertain_ignore_fraction_0.75",
+    "missed_thick_component_count",
+    "missed_faint_component_count",
     "skeleton_dice_0.5",
     "skeleton_precision_0.5",
     "skeleton_recall_0.5",
@@ -96,6 +104,9 @@ def main(argv: list[str] | None = None) -> int:
         records = records_from_args(args)
         torch = import_torch()
         model, checkpoint_path, device = load_model(args.checkpoint, args.run_dir, args.device, torch)
+        from fibras.training.schema08_baseline import device_report
+        args.device_report = device_report(device)
+        print(f"device: {args.device_report}")
         rows = [
             evaluate_record(record, args.out, model, device, torch, checkpoint_path, args)
             for record in records
@@ -115,12 +126,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--annotation-dir", type=Path)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--image-root", type=Path)
+    parser.add_argument("--annotation-root", type=Path)
+    parser.add_argument("--fold-manifest", type=Path)
+    parser.add_argument("--outer-fold", type=int)
+    parser.add_argument("--partition", choices=["train", "validation", "test"], default="test")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--run-dir", type=Path, default=Path("runs/first_baseline_schema08_v0_50ep_wandb"))
     parser.add_argument("--out", type=Path, default=Path("reports/real_annotation_batch_eval"))
     parser.add_argument("--patch-size", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--skeleton-threshold", type=float, default=0.75)
     parser.add_argument("--overlap", "--tile-overlap", dest="tile_overlap", type=int, default=32)
     parser.add_argument(
@@ -143,8 +159,30 @@ def records_from_args(args: argparse.Namespace) -> list[dict[str, str]]:
         records = discover_annotation_triplets(args.annotation_dir)
     else:
         assert args.manifest is not None
-        records = read_annotation_manifest(args.manifest)
+        records = read_annotation_manifest(
+            args.manifest,
+            image_root=args.image_root,
+            annotation_root=args.annotation_root,
+        )
+    if (args.fold_manifest is None) != (args.outer_fold is None):
+        raise ValueError("--fold-manifest and --outer-fold must be provided together")
+    if args.fold_manifest is not None:
+        records = filter_records(records, fold_sample_ids(args.fold_manifest, args.outer_fold, args.partition))
     return filter_records(records, parse_include_images(args.include_image))
+
+
+def fold_sample_ids(path: Path, outer_fold: int, partition: str) -> list[str]:
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    selected = [
+        row["sample_id"] for row in rows
+        if int(row["outer_fold"]) == outer_fold
+        and row["partition"] == partition
+        and row.get("validation_status", "valid") == "valid"
+    ]
+    if not selected:
+        raise ValueError(f"fold {outer_fold} has no valid {partition} images")
+    return selected
 
 
 def parse_include_images(values: list[str]) -> list[str]:
@@ -205,31 +243,29 @@ def matching_label_path(image: Path) -> Path | None:
     return next((path for path in candidates if path.exists()), None)
 
 
-def read_annotation_manifest(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    required = {"sample_id", "image_path", "snakes_path", "labels_path"}
-    missing = required - set(rows[0] if rows else [])
-    if missing:
-        raise ValueError(f"{path}: missing required columns: {sorted(missing)}")
-    records = []
-    for row in rows:
-        records.append(
-            {
-                "sample_id": row["sample_id"],
-                "image_path": str(resolve_relative(row["image_path"], path.parent)),
-                "snakes_path": str(resolve_relative(row["snakes_path"], path.parent)),
-                "labels_path": str(resolve_relative(row["labels_path"], path.parent)),
-                "notes": row.get("notes", ""),
-                "expected_category": row.get("expected_category", ""),
-            }
-        )
-    return records
-
-
-def resolve_relative(raw: str, root: Path) -> Path:
-    path = Path(raw)
-    return path if path.is_absolute() else root / path
+def read_annotation_manifest(
+    path: Path,
+    *,
+    image_root: Path | None = None,
+    annotation_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    records = read_real_annotation_manifest(
+        path,
+        image_root=image_root,
+        annotation_root=annotation_root,
+    )
+    return [
+        {
+            "sample_id": record.sample_id,
+            "image_path": str(record.image_path),
+            "snakes_path": str(record.snakes_path) if record.snakes_path else None,
+            "labels_path": str(record.labels_path),
+            "notes": record.notes,
+            "expected_category": (record.metadata or {}).get("expected_category")
+            or (record.metadata or {}).get("disease", ""),
+        }
+        for record in records
+    ]
 
 
 def evaluate_record(
@@ -325,6 +361,12 @@ def aggregate_sample(
         predictions["skeleton_probability"],
     )
     intensity = image_intensity_stats(raw)
+    target_fibrous = sample["real_semantic_mask"] == 1
+    target_clump = sample["real_semantic_mask"] == 3
+    target_uncertain = sample["real_semantic_mask"] == 255
+    pred_fibrous = predictions["semantic_class_map"] == 1
+    pred_clump = predictions["semantic_class_map"] == 3
+    pred_skeleton = predictions["skeleton_probability"] > 0.75
     row: dict[str, Any] = {
         "sample_id": record["sample_id"],
         "expected_category": record.get("expected_category", ""),
@@ -338,6 +380,13 @@ def aggregate_sample(
         "false_negative_fibrous_pixels": semantic["false_negative_fibrous_pixels"],
         "clump_dice": metrics["clump_dice"],
         "clump_target_pixels": metrics["clump_target_pixels"],
+        "fibrous_inside_target_clump_fraction": mask_fraction(pred_fibrous, target_clump),
+        "fibrous_inside_uncertain_ignore_fraction": mask_fraction(pred_fibrous, target_uncertain),
+        "clump_inside_target_fibrous_fraction": mask_fraction(pred_clump, target_fibrous),
+        "skeleton_inside_target_clump_fraction_0.75": mask_fraction(pred_skeleton, target_clump),
+        "skeleton_inside_uncertain_ignore_fraction_0.75": mask_fraction(pred_skeleton, target_uncertain),
+        "missed_thick_component_count": semantic["missed_thick_fiber_or_bundle_component_count"],
+        "missed_faint_component_count": semantic["missed_faint_fiber_component_count"],
         "predicted_skeleton_inside_predicted_fibrous_fraction": metrics[
             "predicted_skeleton_inside_predicted_fibrous_fraction"
         ],
@@ -369,6 +418,11 @@ def aggregate_sample(
     return row
 
 
+def mask_fraction(prediction: np.ndarray, target_region: np.ndarray) -> float | str:
+    count = int(target_region.sum())
+    return float((prediction & target_region).sum() / count) if count else "not_applicable"
+
+
 def write_aggregate_outputs(out_root: Path, rows: list[dict[str, Any]], checkpoint_path: Path, args: argparse.Namespace) -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     write_summary_csv(out_root / "summary.csv", rows)
@@ -377,6 +431,7 @@ def write_aggregate_outputs(out_root: Path, rows: list[dict[str, Any]], checkpoi
         "run_dir": str(args.run_dir) if args.run_dir else None,
         "sample_count": len(rows),
         "thresholds": list(THRESHOLDS),
+        "device_report": getattr(args, "device_report", None),
         "rows": rows,
         "aggregates": aggregate_rows(rows),
         "interpretation": batch_interpretation(rows),
@@ -399,7 +454,15 @@ def aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "fibrous_precision",
         "fibrous_recall",
         "predicted_to_target_fibrous_area_ratio",
+        "clump_dice",
         "clump_target_pixels",
+        "fibrous_inside_target_clump_fraction",
+        "fibrous_inside_uncertain_ignore_fraction",
+        "clump_inside_target_fibrous_fraction",
+        "skeleton_inside_target_clump_fraction_0.75",
+        "skeleton_inside_uncertain_ignore_fraction_0.75",
+        "missed_thick_component_count",
+        "missed_faint_component_count",
         "intensity_mean",
         "intensity_p95",
         "intensity_zero_fraction",

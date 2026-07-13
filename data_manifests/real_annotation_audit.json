@@ -1,0 +1,79 @@
+{
+  "ambiguous_or_missing_metadata": [
+    "Biological preparation identity is not available beyond the existing provisional experimental_group_id. PN is retained only as culture_id."
+  ],
+  "annotated_image_count": 20,
+  "class_statistics": {
+    "background": {
+      "components": 2313,
+      "pixels": 18742862
+    },
+    "clump": {
+      "components": 63,
+      "pixels": 360549
+    },
+    "fibrous_tau": {
+      "components": 1041,
+      "pixels": 837980
+    },
+    "uncertain_ignore": {
+      "components": 2627,
+      "pixels": 1030129
+    }
+  },
+  "manual_resolution_required": [
+    "Confirm biological preparation/replicate identifiers before final train/evaluation assignment.",
+    "Review flagged snake overlap in 5 image(s): PN148_3R_AD_DIV07 (Series 0) [1], PN148_3R_PID_DIV05 (Series 2) [1], PN148_4R_AD_DIV03 (Series 11) [1], PN148_4R_PSP_DIV5 (Series 5) [1], PN151_4R_CBD_DIV05 (Series 3) [1].",
+    "Resolve 0 validation problem(s) before using affected images for training or evaluation."
+  ],
+  "metadata_distribution": {
+    "disease": {
+      "AD": 8,
+      "CBD": 4,
+      "PID": 4,
+      "PSP": 4
+    },
+    "div": {
+      "10": 3,
+      "3": 2,
+      "5": 11,
+      "7": 4
+    },
+    "experimental_group_id": {
+      "PN148_AD_3R_DIV05": 2,
+      "PN148_AD_3R_DIV07": 1,
+      "PN148_AD_3R_DIV10": 1,
+      "PN148_AD_4R_DIV03": 2,
+      "PN148_AD_4R_DIV05": 1,
+      "PN148_AD_4R_DIV07": 1,
+      "PN148_PID_3R_DIV05": 3,
+      "PN148_PID_3R_DIV07": 1,
+      "PN148_PSP_4R_DIV05": 1,
+      "PN148_PSP_4R_DIV07": 1,
+      "PN148_PSP_4R_DIV10": 2,
+      "PN151_CBD_4R_DIV05": 4
+    },
+    "split": {
+      "calibration": 3,
+      "test": 4,
+      "train": 2,
+      "validation": 11
+    },
+    "tau_isoform": {
+      "3R": 8,
+      "4R": 12
+    },
+    "validation_status": {
+      "valid": 20
+    }
+  },
+  "skeleton_annotations": {
+    "flagged_snakes": 36,
+    "images_available": 20,
+    "nonfibrous_pixels_clipped": 11448,
+    "skeleton_pixels": 205908,
+    "total_snakes": 1620,
+    "usable_snakes": 1584
+  },
+  "validation_problems": []
+}

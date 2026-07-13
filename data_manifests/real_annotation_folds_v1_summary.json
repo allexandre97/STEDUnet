@@ -1,0 +1,424 @@
+{
+  "fold_schema_version": "real_annotation_grouped_cv_1.0.0",
+  "folds": {
+    "0": {
+      "test": {
+        "annotation_prevalence_mean": {
+          "clump": 0.00502491,
+          "fibrous": 0.037126065,
+          "uncertain": 0.019165515
+        },
+        "disease": {
+          "CBD": 4
+        },
+        "div": {
+          "5": 4
+        },
+        "groups": 1,
+        "images": 4,
+        "invalid_images": 0,
+        "isoform": {
+          "4R": 4
+        },
+        "morphology_density": {
+          "dense": 1,
+          "sparse": 3
+        }
+      },
+      "train": {
+        "annotation_prevalence_mean": {
+          "clump": 0.02037701307692308,
+          "fibrous": 0.039222057692307695,
+          "uncertain": 0.05416767384615384
+        },
+        "disease": {
+          "AD": 6,
+          "PID": 4,
+          "PSP": 3
+        },
+        "div": {
+          "10": 2,
+          "3": 2,
+          "5": 6,
+          "7": 3
+        },
+        "groups": 8,
+        "images": 13,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 6,
+          "4R": 7
+        },
+        "morphology_density": {
+          "dense": 7,
+          "sparse": 6
+        }
+      },
+      "validation": {
+        "annotation_prevalence_mean": {
+          "clump": 0.019615173333333333,
+          "fibrous": 0.046923,
+          "uncertain": 0.06718857666666667
+        },
+        "disease": {
+          "AD": 2,
+          "PSP": 1
+        },
+        "div": {
+          "10": 1,
+          "5": 1,
+          "7": 1
+        },
+        "groups": 3,
+        "images": 3,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 2,
+          "4R": 1
+        },
+        "morphology_density": {
+          "dense": 2,
+          "sparse": 1
+        }
+      }
+    },
+    "1": {
+      "test": {
+        "annotation_prevalence_mean": {
+          "clump": 0.00861168,
+          "fibrous": 0.028766060000000003,
+          "uncertain": 0.057244107999999995
+        },
+        "disease": {
+          "AD": 3,
+          "PSP": 2
+        },
+        "div": {
+          "10": 2,
+          "5": 2,
+          "7": 1
+        },
+        "groups": 3,
+        "images": 5,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 2,
+          "4R": 3
+        },
+        "morphology_density": {
+          "dense": 2,
+          "sparse": 3
+        }
+      },
+      "train": {
+        "annotation_prevalence_mean": {
+          "clump": 0.024580081666666666,
+          "fibrous": 0.032272815833333336,
+          "uncertain": 0.04841661416666667
+        },
+        "disease": {
+          "AD": 4,
+          "CBD": 4,
+          "PID": 3,
+          "PSP": 1
+        },
+        "div": {
+          "10": 1,
+          "3": 2,
+          "5": 7,
+          "7": 2
+        },
+        "groups": 6,
+        "images": 12,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 5,
+          "4R": 7
+        },
+        "morphology_density": {
+          "dense": 6,
+          "sparse": 6
+        }
+      },
+      "validation": {
+        "annotation_prevalence_mean": {
+          "clump": 0.0019423166666666667,
+          "fibrous": 0.08935197333333333,
+          "uncertain": 0.03839588
+        },
+        "disease": {
+          "AD": 1,
+          "PID": 1,
+          "PSP": 1
+        },
+        "div": {
+          "5": 2,
+          "7": 1
+        },
+        "groups": 3,
+        "images": 3,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 1,
+          "4R": 2
+        },
+        "morphology_density": {
+          "dense": 2,
+          "sparse": 1
+        }
+      }
+    },
+    "2": {
+      "test": {
+        "annotation_prevalence_mean": {
+          "clump": 0.00131448,
+          "fibrous": 0.05188306,
+          "uncertain": 0.016975086666666667
+        },
+        "disease": {
+          "PID": 3
+        },
+        "div": {
+          "5": 3
+        },
+        "groups": 1,
+        "images": 3,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 3
+        },
+        "morphology_density": {
+          "dense": 2,
+          "sparse": 1
+        }
+      },
+      "train": {
+        "annotation_prevalence_mean": {
+          "clump": 0.020644937857142855,
+          "fibrous": 0.04102407214285714,
+          "uncertain": 0.054467540714285716
+        },
+        "disease": {
+          "AD": 6,
+          "CBD": 4,
+          "PID": 1,
+          "PSP": 3
+        },
+        "div": {
+          "10": 2,
+          "3": 2,
+          "5": 7,
+          "7": 3
+        },
+        "groups": 8,
+        "images": 14,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 4,
+          "4R": 10
+        },
+        "morphology_density": {
+          "dense": 7,
+          "sparse": 7
+        }
+      },
+      "validation": {
+        "annotation_prevalence_mean": {
+          "clump": 0.016957919999999998,
+          "fibrous": 0.02305794,
+          "uncertain": 0.056312240000000006
+        },
+        "disease": {
+          "AD": 2,
+          "PSP": 1
+        },
+        "div": {
+          "10": 1,
+          "5": 1,
+          "7": 1
+        },
+        "groups": 3,
+        "images": 3,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 1,
+          "4R": 2
+        },
+        "morphology_density": {
+          "dense": 1,
+          "sparse": 2
+        }
+      }
+    },
+    "3": {
+      "test": {
+        "annotation_prevalence_mean": {
+          "clump": 0.0564677725,
+          "fibrous": 0.0364542,
+          "uncertain": 0.0943284025
+        },
+        "disease": {
+          "AD": 3,
+          "PSP": 1
+        },
+        "div": {
+          "3": 2,
+          "5": 1,
+          "7": 1
+        },
+        "groups": 3,
+        "images": 4,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 1,
+          "4R": 3
+        },
+        "morphology_density": {
+          "dense": 3,
+          "sparse": 1
+        }
+      },
+      "train": {
+        "annotation_prevalence_mean": {
+          "clump": 0.005161652307692307,
+          "fibrous": 0.04493610692307692,
+          "uncertain": 0.033550555384615384
+        },
+        "disease": {
+          "AD": 3,
+          "CBD": 4,
+          "PID": 4,
+          "PSP": 2
+        },
+        "div": {
+          "10": 2,
+          "5": 9,
+          "7": 2
+        },
+        "groups": 6,
+        "images": 13,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 6,
+          "4R": 7
+        },
+        "morphology_density": {
+          "dense": 6,
+          "sparse": 7
+        }
+      },
+      "validation": {
+        "annotation_prevalence_mean": {
+          "clump": 0.016957919999999998,
+          "fibrous": 0.02305794,
+          "uncertain": 0.056312240000000006
+        },
+        "disease": {
+          "AD": 2,
+          "PSP": 1
+        },
+        "div": {
+          "10": 1,
+          "5": 1,
+          "7": 1
+        },
+        "groups": 3,
+        "images": 3,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 1,
+          "4R": 2
+        },
+        "morphology_density": {
+          "dense": 1,
+          "sparse": 2
+        }
+      }
+    },
+    "4": {
+      "test": {
+        "annotation_prevalence_mean": {
+          "clump": 0.01271844,
+          "fibrous": 0.0513398675,
+          "uncertain": 0.04782152
+        },
+        "disease": {
+          "AD": 2,
+          "PID": 1,
+          "PSP": 1
+        },
+        "div": {
+          "10": 1,
+          "5": 1,
+          "7": 2
+        },
+        "groups": 4,
+        "images": 4,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 2,
+          "4R": 2
+        },
+        "morphology_density": {
+          "dense": 2,
+          "sparse": 2
+        }
+      },
+      "train": {
+        "annotation_prevalence_mean": {
+          "clump": 0.019224166923076925,
+          "fibrous": 0.0327958323076923,
+          "uncertain": 0.04688475692307693
+        },
+        "disease": {
+          "AD": 4,
+          "CBD": 4,
+          "PID": 3,
+          "PSP": 2
+        },
+        "div": {
+          "10": 2,
+          "3": 2,
+          "5": 7,
+          "7": 2
+        },
+        "groups": 6,
+        "images": 13,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 4,
+          "4R": 9
+        },
+        "morphology_density": {
+          "dense": 6,
+          "sparse": 7
+        }
+      },
+      "validation": {
+        "annotation_prevalence_mean": {
+          "clump": 0.014352799999999999,
+          "fibrous": 0.05581824,
+          "uncertain": 0.060539876666666666
+        },
+        "disease": {
+          "AD": 2,
+          "PSP": 1
+        },
+        "div": {
+          "5": 3
+        },
+        "groups": 2,
+        "images": 3,
+        "invalid_images": 0,
+        "isoform": {
+          "3R": 2,
+          "4R": 1
+        },
+        "morphology_density": {
+          "dense": 2,
+          "sparse": 1
+        }
+      }
+    }
+  }
+}

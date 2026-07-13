@@ -30,6 +30,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         torch = import_torch()
         model, checkpoint_path, device = load_model(args.checkpoint, args.run_dir, args.device, torch)
+        from fibras.training.schema08_baseline import device_report
+        selected_device_report = device_report(device)
+        print(f"device: {selected_device_report}")
         sample = build_real_annotation_sample(args.image, args.snakes, args.labels)
         predictions = run_tiled_inference(
             model,
@@ -65,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         "batch_size": int(args.batch_size),
         "tile_overlap": int(args.tile_overlap),
         "device": str(args.device),
+        "resolved_device": str(device),
+        "device_report": selected_device_report,
         "semantic_threshold": args.semantic_threshold,
         "uncertainty_gating": args.uncertainty_gating,
         "uncertainty_threshold": float(args.uncertainty_threshold),
@@ -84,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--patch-size", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--skeleton-threshold", type=float, default=0.75)
     parser.add_argument("--semantic-threshold", type=float)
     parser.add_argument("--overlap", "--tile-overlap", dest="tile_overlap", type=int, default=32)

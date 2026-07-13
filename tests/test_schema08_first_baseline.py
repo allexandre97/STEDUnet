@@ -482,47 +482,50 @@ def test_uncertainty_loss_modes_are_supported(loss_name):
     assert float(loss) > 0.0
 
 
-def test_uncertain_skeleton_policy_can_suppress_uncertain_pixels():
+def test_explicit_skeleton_valid_mask_always_ignores_uncertain_pixels():
     torch = pytest.importorskip("torch")
     from fibras.training.schema08_baseline import IGNORE_INDEX, compute_loss
 
     outputs = {
         "semantic_logits": torch.zeros(1, 3, 1, 2),
-        "skeleton_logits": torch.full((1, 1, 1, 2), 10.0),
+        "skeleton_logits": torch.tensor([[[[10.0, -10.0]]]]),
     }
     batch = {
         "semantic": torch.tensor([[[IGNORE_INDEX, 0]]]),
         "skeleton": torch.zeros(1, 1, 1, 2),
         "uncertain": torch.tensor([[[[1.0, 0.0]]]]),
         "valid": torch.tensor([[[[0.0, 1.0]]]]),
-    }
-
-    _, ignored = compute_loss(outputs, batch, uncertain_skeleton_policy="ignore")
-    _, suppressed = compute_loss(outputs, batch, uncertain_skeleton_policy="suppress")
-
-    assert suppressed["skeleton_loss"] > ignored["skeleton_loss"]
-
-
-def test_uncertain_skeleton_policy_suppress_overrides_uncertain_skeleton_target():
-    torch = pytest.importorskip("torch")
-    from fibras.training.schema08_baseline import IGNORE_INDEX, compute_loss
-
-    outputs = {
-        "semantic_logits": torch.zeros(1, 3, 1, 2),
-        "skeleton_logits": torch.full((1, 1, 1, 2), 10.0),
-    }
-    batch = {
-        "semantic": torch.tensor([[[IGNORE_INDEX, 0]]]),
-        "skeleton": torch.tensor([[[[1.0, 0.0]]]]),
-        "uncertain": torch.tensor([[[[1.0, 0.0]]]]),
-        "valid": torch.tensor([[[[0.0, 1.0]]]]),
+        "skeleton_valid": torch.tensor([[[[0.0, 1.0]]]]),
     }
 
     _, ignored = compute_loss(outputs, batch, uncertain_skeleton_policy="ignore")
     _, suppressed = compute_loss(outputs, batch, uncertain_skeleton_policy="suppress")
 
     assert ignored["skeleton_loss"] < 1e-3
-    assert suppressed["skeleton_loss"] > 9.0
+    assert suppressed["skeleton_loss"] == ignored["skeleton_loss"]
+
+
+def test_explicit_skeleton_valid_mask_excludes_uncertain_positive_target():
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import IGNORE_INDEX, compute_loss
+
+    outputs = {
+        "semantic_logits": torch.zeros(1, 3, 1, 2),
+        "skeleton_logits": torch.tensor([[[[10.0, -10.0]]]]),
+    }
+    batch = {
+        "semantic": torch.tensor([[[IGNORE_INDEX, 0]]]),
+        "skeleton": torch.tensor([[[[1.0, 0.0]]]]),
+        "uncertain": torch.tensor([[[[1.0, 0.0]]]]),
+        "valid": torch.tensor([[[[0.0, 1.0]]]]),
+        "skeleton_valid": torch.tensor([[[[0.0, 1.0]]]]),
+    }
+
+    _, ignored = compute_loss(outputs, batch, uncertain_skeleton_policy="ignore")
+    _, suppressed = compute_loss(outputs, batch, uncertain_skeleton_policy="suppress")
+
+    assert ignored["skeleton_loss"] < 1e-3
+    assert suppressed["skeleton_loss"] == ignored["skeleton_loss"]
 
 
 def test_clump_protection_losses_apply_only_inside_target_clump():
@@ -605,6 +608,41 @@ def test_auto_device_uses_cuda_when_available(monkeypatch):
     device = baseline.choose_device("auto")
     assert str(device) == "cuda:0"
     assert validated == ["cuda:0"]
+
+
+def test_invalid_device_string_fails_clearly():
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import DeviceSelectionError, choose_device
+
+    with pytest.raises(DeviceSelectionError, match="invalid device"):
+        choose_device("cuda:not-an-index")
+
+
+def test_macro_per_image_metric_is_used_for_checkpoint_selection():
+    from fibras.training.schema08_baseline import macro_metric, selected_validation_metric
+
+    per_image = {
+        "easy": {"fibrous_dice": 1.0},
+        "hard": {"fibrous_dice": 0.0},
+    }
+    metrics = {"macro_image_fibrous_dice": macro_metric(per_image, "fibrous_dice")}
+
+    assert selected_validation_metric(metrics, "macro_image_fibrous_dice") == 0.5
+
+
+def test_stage_one_freezes_encoder_and_stage_two_unfreezes_it():
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import BaselineConfig, SmallUNet, optimizer_for_stage
+
+    model = SmallUNet(base_channels=4)
+    config = BaselineConfig("manifest.csv", "run", stage1_learning_rate=1e-3, learning_rate=1e-4)
+    stage1 = optimizer_for_stage(model, config, "stage1_frozen_encoder")
+    assert not any(parameter.requires_grad for parameter in model.enc1.parameters())
+    assert stage1.param_groups[0]["lr"] == 1e-3
+
+    stage2 = optimizer_for_stage(model, config, "stage2_full_model")
+    assert all(parameter.requires_grad for parameter in model.enc1.parameters())
+    assert stage2.param_groups[0]["lr"] == 1e-4
 
 
 def test_training_script_does_not_import_wandb_when_disabled(monkeypatch, tmp_path):
@@ -898,3 +936,26 @@ def test_default_training_writes_existing_final_checkpoint(tmp_path, monkeypatch
 
     assert (tmp_path / "run" / "model.pt").exists()
     assert not (tmp_path / "run" / "model_best.pt").exists()
+
+
+def test_training_can_resume_complete_checkpoint(tmp_path):
+    from dataclasses import replace
+    torch = pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import BaselineConfig, train_baseline
+
+    first = tiny_baseline_config(tmp_path, epochs=1)
+    train_baseline(first)
+    checkpoint = tmp_path / "run" / "model.pt"
+    resumed = replace(
+        first,
+        out=str(tmp_path / "resumed"),
+        epochs=2,
+        resume_checkpoint=str(checkpoint),
+    )
+
+    train_baseline(resumed)
+
+    payload = torch.load(tmp_path / "resumed" / "model.pt", map_location="cpu")
+    assert payload["epoch"] == 2
+    assert payload["optimizer_state_dict"] is not None
+    assert payload["checkpoint_metadata"]["kind"] == "final"

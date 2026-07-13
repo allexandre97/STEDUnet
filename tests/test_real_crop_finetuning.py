@@ -9,9 +9,11 @@ import pytest
 from fibras.training.bundle_diagnostics import bundle_diagnostics_from_arrays
 from fibras.training.real_crops import (
     RealAnnotationRecord,
+    apply_fold_assignments,
     build_real_crop_dataset,
     discover_real_annotation_triplets,
     image_splits,
+    real_patch_categories,
 )
 
 
@@ -64,6 +66,7 @@ def test_real_crop_dataset_keeps_splits_at_whole_image_level(tmp_path):
             "real_compatible_semantic_mask",
             "real_compatible_uncertain_ignore_mask",
             "real_compatible_skeleton_mask",
+            "real_compatible_skeleton_valid_mask",
         }
         semantic = data["real_compatible_semantic_mask"]
         assert 255 in set(np.unique(semantic))
@@ -75,6 +78,18 @@ def test_leave_one_image_out_split_rejects_unknown_image(tmp_path):
     records = [real_record(tmp_path, "img_a", 2)]
     with pytest.raises(ValueError, match="leave-one-out image"):
         image_splits(records, 1, 0.2, 0.0, "missing")
+
+
+def test_grouped_images_cannot_cross_real_crop_splits(tmp_path):
+    records = [
+        RealAnnotationRecord("img_a", tmp_path / "a", tmp_path / "a", None, split_group_id="prep_1"),
+        RealAnnotationRecord("img_b", tmp_path / "b", tmp_path / "b", None, split_group_id="prep_1"),
+        RealAnnotationRecord("img_c", tmp_path / "c", tmp_path / "c", None, split_group_id="prep_2"),
+    ]
+
+    splits = image_splits(records, 1, 0.5, 0.0, None)
+
+    assert splits["img_a"] == splits["img_b"]
 
 
 def test_annotation_dir_discovery_matches_image_label_snake_triplets(tmp_path):
@@ -144,6 +159,65 @@ def test_mixed_batch_sampler_enforces_ratio():
     for batch in sampler:
         assert sum(index < 10 for index in batch) == 8
         assert sum(index >= 10 for index in batch) == 2
+
+
+@pytest.mark.parametrize("ratio,expected", [("90:10", (9, 1)), ("80:20", (8, 2)), ("50:50", (5, 5)), ("0:100", (0, 10))])
+def test_sampler_ratios_control_batch_composition(ratio, expected):
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import batch_counts
+
+    assert batch_counts(10, ratio) == expected
+
+
+def test_real_sampler_balances_parent_images_despite_crop_count():
+    pytest.importorskip("torch")
+    from fibras.training.schema08_baseline import balanced_real_index_stream
+
+    rows = [
+        {"sample_id": f"a_{i}", "source_image_id": "a", "sampling_categories": "uniform_random"}
+        for i in range(50)
+    ] + [{"sample_id": "b_0", "source_image_id": "b", "sampling_categories": "uniform_random"}]
+    stream = balanced_real_index_stream(
+        rows,
+        np.random.default_rng(4),
+        "fibrous_positive=0,clump_positive=0,uncertain_positive=0,dense_or_fibrous_clump_boundary=0,background_hard_negative=0,uniform_random=1",
+    )
+    parents = [rows[next(stream)]["source_image_id"] for _ in range(1000)]
+
+    assert 400 < parents.count("a") < 600
+
+
+def test_real_patch_categories_cover_requested_sampling_roles():
+    semantic = np.zeros((8, 8), dtype=np.uint8)
+    semantic[1:5, 1:5] = 1
+    semantic[4:7, 4:7] = 3
+    semantic[0, 0] = 255
+
+    categories = real_patch_categories(semantic)
+
+    assert set(categories) >= {
+        "fibrous_positive", "clump_positive", "uncertain_positive",
+        "dense_or_fibrous_clump_boundary", "uniform_random",
+    }
+
+
+def test_fold_assignment_is_inherited_by_parent_records(tmp_path):
+    records = [
+        RealAnnotationRecord("img_a", tmp_path / "a", tmp_path / "a", None, split_group_id="prep_a"),
+        RealAnnotationRecord("img_b", tmp_path / "b", tmp_path / "b", None, split_group_id="prep_b"),
+    ]
+    manifest = tmp_path / "folds.csv"
+    with manifest.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["outer_fold", "sample_id", "partition"])
+        writer.writeheader()
+        writer.writerows([
+            {"outer_fold": "0", "sample_id": "img_a", "partition": "train"},
+            {"outer_fold": "0", "sample_id": "img_b", "partition": "test"},
+        ])
+
+    assigned = apply_fold_assignments(records, manifest, 0)
+
+    assert {record.sample_id: record.split for record in assigned} == {"img_a": "train", "img_b": "test"}
 
 
 def test_uncertainty_head_adds_optional_loss():

@@ -62,7 +62,6 @@ def parse_labkit_labeling(path: str | Path) -> LabkitLabels:
 
     shape = _interval_shape(data.get("interval"), path)
     masks = {name: np.zeros(shape, dtype=bool) for name in REAL_LABEL_VALUES}
-    semantic = np.zeros(shape, dtype=np.uint8)
     label_names = list(data["labels"])
     canonical_names: list[str] = []
     warnings: list[str] = []
@@ -74,7 +73,11 @@ def parse_labkit_labeling(path: str | Path) -> LabkitLabels:
             warnings.append(f"ignored unknown Labkit label: {raw_name}")
             continue
         _paint_coordinates(masks[canonical], coords, path, raw_name)
-        semantic[masks[canonical]] = REAL_LABEL_VALUES[canonical]
+
+    semantic = np.zeros(shape, dtype=np.uint8)
+    semantic[masks["fibers"]] = REAL_LABEL_VALUES["fibers"]
+    semantic[masks["clump"]] = REAL_LABEL_VALUES["clump"]
+    semantic[masks["uncertain_ignore"]] = REAL_LABEL_VALUES["uncertain_ignore"]
 
     return LabkitLabels(
         image_shape=shape,

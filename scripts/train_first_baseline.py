@@ -108,7 +108,7 @@ def prepare_wandb_dirs(args: argparse.Namespace, mode: str) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--manifest")
     parser.add_argument("--out", required=True)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", "--batch_size", dest="batch_size", type=int, default=4)
@@ -130,9 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skeleton-pos-weight", "--skeleton_pos_weight", dest="skeleton_pos_weight", type=float, default=8.0)
     parser.add_argument("--skeleton-threshold", "--skeleton_threshold", dest="skeleton_threshold", type=float, default=0.5)
     parser.add_argument("--cache-samples", "--cache_samples", dest="cache_samples", action="store_true")
+    parser.add_argument("--augmentation", action="store_true", help="Apply deterministic 90-degree rotations and flips to training patches.")
     parser.add_argument("--limit-train-samples", "--limit_train_samples", dest="limit_train_samples", type=int)
     parser.add_argument("--limit-val-samples", "--limit_val_samples", dest="limit_val_samples", type=int)
     parser.add_argument("--patches-per-epoch", "--patches_per_epoch", dest="patches_per_epoch", type=int)
+    parser.add_argument("--qa-panel-count", "--qa_panel_count", dest="qa_panel_count", type=int, default=8)
     parser.add_argument("--real-manifest", "--real_manifest", dest="real_manifest")
     parser.add_argument("--model-variant", "--model_variant", dest="model_variant", choices=["small_unet", "context_unet"], default="small_unet")
     parser.add_argument("--context-module", "--context_module", dest="context_module", choices=["none", "aspp"], default="none")
@@ -143,11 +145,21 @@ def build_parser() -> argparse.ArgumentParser:
         dest="init_checkpoint",
         help="Optional checkpoint to warm-start from before training.",
     )
+    parser.add_argument("--resume-checkpoint", "--resume_checkpoint", dest="resume_checkpoint")
+    parser.add_argument("--stage1-epochs", "--stage1_epochs", dest="stage1_epochs", type=int, default=0)
+    parser.add_argument(
+        "--stage1-learning-rate", "--stage1_learning_rate",
+        dest="stage1_learning_rate", type=float, default=1e-3,
+    )
     parser.add_argument(
         "--synthetic-real-ratio",
         "--synthetic_real_ratio",
         dest="synthetic_real_ratio",
-        help="Optional per-batch synthetic:real patch ratio, for example 80:20.",
+        help="Per-batch synthetic:real ratio, including 0:100, 90:10, 80:20, or 50:50.",
+    )
+    parser.add_argument(
+        "--real-sampling-weights", "--real_sampling_weights", dest="real_sampling_weights",
+        default="fibrous_positive=1,clump_positive=1,uncertain_positive=1,dense_or_fibrous_clump_boundary=1,background_hard_negative=1,uniform_random=1",
     )
     parser.add_argument(
         "--enable-uncertainty-head",
@@ -160,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--uncertainty-loss",
         "--uncertainty_loss",
         dest="uncertainty_loss",
-        choices=["bce", "balanced_bce", "focal_bce"],
+        choices=["bce", "balanced_bce", "focal_bce", "stratified_bce"],
         default="bce",
     )
     parser.add_argument(
@@ -184,6 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["ignore", "suppress"],
         default="ignore",
     )
+    parser.add_argument("--lambda-uncertain-fibrous", type=float, default=0.0)
+    parser.add_argument("--uncertain-fibrous-tau", type=float, default=0.5)
+    parser.add_argument("--rejection-near-distance", type=float, default=20.0)
     parser.add_argument(
         "--lambda-clump-anti-fibrous",
         "--lambda_clump_anti_fibrous",
@@ -200,7 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--save-best-checkpoint", "--save_best_checkpoint", dest="save_best_checkpoint", action="store_true")
-    parser.add_argument("--best-metric", "--best_metric", dest="best_metric", default="loss")
+    parser.add_argument("--best-metric", "--best_metric", dest="best_metric")
     parser.add_argument("--best-mode", "--best_mode", dest="best_mode", choices=["min", "max", "auto"], default="auto")
     parser.add_argument("--early-stop-patience", "--early_stop_patience", dest="early_stop_patience", type=int, default=0)
     parser.add_argument("--early-stop-min-delta", "--early_stop_min_delta", dest="early_stop_min_delta", type=float, default=0.0)
@@ -229,8 +244,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def config_from_args(args: argparse.Namespace) -> BaselineConfig:
+    if args.manifest is None and args.synthetic_real_ratio != "0:100":
+        raise ValueError("--manifest is required unless --synthetic-real-ratio 0:100 is used")
+    if args.synthetic_real_ratio == "0:100" and args.real_manifest is None:
+        raise ValueError("--synthetic-real-ratio 0:100 requires --real-manifest")
     return BaselineConfig(
-        manifest=args.manifest,
+        manifest=args.manifest or "not_used_real_only",
         out=args.out,
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -246,17 +265,23 @@ def config_from_args(args: argparse.Namespace) -> BaselineConfig:
         skeleton_pos_weight=args.skeleton_pos_weight,
         skeleton_threshold=args.skeleton_threshold,
         cache_samples=args.cache_samples,
+        augmentation=args.augmentation,
         limit_train_samples=args.limit_train_samples,
         limit_val_samples=args.limit_val_samples,
         patches_per_epoch=args.patches_per_epoch,
+        qa_panel_count=args.qa_panel_count,
         real_manifest=args.real_manifest,
         init_checkpoint=args.init_checkpoint,
+        resume_checkpoint=args.resume_checkpoint,
+        stage1_epochs=args.stage1_epochs,
+        stage1_learning_rate=args.stage1_learning_rate,
         synthetic_real_ratio=args.synthetic_real_ratio,
+        real_sampling_weights=args.real_sampling_weights,
         model_variant=args.model_variant,
         context_module=args.context_module,
         aspp_dilations=args.aspp_dilations,
-        save_best_checkpoint=args.save_best_checkpoint,
-        best_metric=args.best_metric,
+        save_best_checkpoint=args.save_best_checkpoint or args.real_manifest is not None,
+        best_metric=args.best_metric or ("macro_image_fibrous_dice" if args.real_manifest else "loss"),
         best_mode=args.best_mode,
         early_stop_patience=args.early_stop_patience,
         early_stop_min_delta=args.early_stop_min_delta,
@@ -268,6 +293,9 @@ def config_from_args(args: argparse.Namespace) -> BaselineConfig:
         uncertainty_focal_gamma=args.uncertainty_focal_gamma,
         uncertainty_pos_weight=args.uncertainty_pos_weight,
         uncertain_skeleton_policy=args.uncertain_skeleton_policy,
+        lambda_uncertain_fibrous=args.lambda_uncertain_fibrous,
+        uncertain_fibrous_tau=args.uncertain_fibrous_tau,
+        rejection_near_distance=args.rejection_near_distance,
         lambda_clump_anti_fibrous=args.lambda_clump_anti_fibrous,
         lambda_clump_anti_skeleton=args.lambda_clump_anti_skeleton,
         command_line_args=vars(args),
@@ -290,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     except DeviceSelectionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    except ValueError as exc:
+    except (ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"device: {result['device']}")

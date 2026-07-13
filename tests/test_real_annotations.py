@@ -66,6 +66,26 @@ def test_labkit_labeling_maps_names_and_leaves_unannotated_background(tmp_path):
     assert labels.semantic_mask[3, 4] == 3
 
 
+def test_uncertain_ignore_precedence_is_independent_of_label_order(tmp_path):
+    path = tmp_path / "labels.labeling"
+    write_labeling(
+        path,
+        (2, 2),
+        {
+            "uncertain_ignore": [[1, 1]],
+            "clump": [[1, 1]],
+            "fibers": [[1, 1]],
+        },
+    )
+
+    labels = load_real_labels(path)
+
+    assert labels.masks["fibers"][1, 1]
+    assert labels.masks["clump"][1, 1]
+    assert labels.masks["uncertain_ignore"][1, 1]
+    assert labels.semantic_mask[1, 1] == 255
+
+
 def test_exported_integer_mask_remaps_uncertain_to_255(tmp_path):
     path = tmp_path / "labels.png"
     Image.fromarray(np.asarray([[0, 1, 2, 3]], dtype=np.uint8)).save(path)
@@ -116,6 +136,8 @@ def test_real_conversion_flags_non_fibrous_snakes_without_topology_targets(tmp_p
     ]
     assert sample["real_skeleton_mask"][1].sum() > 0
     assert sample["real_skeleton_mask"][3].sum() == 0
+    assert not np.any(sample["real_skeleton_mask"] & (sample["real_semantic_mask"] != 1))
+    assert not np.any(sample["real_skeleton_valid_mask"] & (sample["real_semantic_mask"] == 255))
     forbidden = ("endpoint", "crossing", "junction", "branch", "merge")
     assert not any(any(word in key for word in forbidden) for key in sample)
 
@@ -126,3 +148,16 @@ def test_synthetic_rich_classes_collapse_to_real_compatible_view():
     real = collapse_synthetic_semantic_to_real(synthetic)
 
     assert real.tolist() == [[0, 1, 1, 3, 255]]
+
+
+def test_real_conversion_without_snakes_disables_skeleton_supervision(tmp_path):
+    image = tmp_path / "image.png"
+    labels = tmp_path / "labels.labeling"
+    Image.fromarray(np.zeros((4, 4), dtype=np.uint8)).save(image)
+    write_labeling(labels, (4, 4), {"fibers": [[1, 1]]})
+
+    sample = build_real_annotation_sample(image, None, labels)
+
+    assert not sample["metadata"]["skeleton_annotation_available"]
+    assert not sample["real_skeleton_mask"].any()
+    assert not sample["real_skeleton_valid_mask"].any()

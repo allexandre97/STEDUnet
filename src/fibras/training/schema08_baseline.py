@@ -6,9 +6,11 @@ import csv
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
 import random
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from scipy.ndimage import distance_transform_edt
 
 
 IGNORE_INDEX = -100
@@ -32,6 +35,10 @@ BEST_MODE_AUTO = {
     "skeleton_dice": "max",
     "skeleton_dice_0.75": "max",
     "uncertain_dice": "max",
+    "macro_image_fibrous_dice": "max",
+    "macro_image_fibrous_area_ratio": "max",
+    "macro_image_clump_leakage": "min",
+    "macro_image_skeleton_recovery_2px": "max",
 }
 
 
@@ -69,6 +76,9 @@ class BaselineConfig:
     uncertainty_focal_gamma: float = 2.0
     uncertainty_pos_weight: str = "auto"
     uncertain_skeleton_policy: str = "ignore"
+    lambda_uncertain_fibrous: float = 0.0
+    uncertain_fibrous_tau: float = 0.5
+    rejection_near_distance: float = 20.0
     lambda_clump_anti_fibrous: float = 0.0
     lambda_clump_anti_skeleton: float = 0.0
     model_variant: str = "small_unet"
@@ -82,6 +92,11 @@ class BaselineConfig:
     early_stop_min_delta: float = 0.0
     early_stop_warmup_epochs: int = 0
     save_checkpoint_every: int = 0
+    resume_checkpoint: str | None = None
+    stage1_epochs: int = 0
+    stage1_learning_rate: float = 1e-3
+    real_sampling_weights: str = "fibrous_positive=1,clump_positive=1,uncertain_positive=1,dense_or_fibrous_clump_boundary=1,background_hard_negative=1,uniform_random=1"
+    augmentation: bool = False
     command_line_args: dict[str, Any] | None = None
 
 
@@ -120,6 +135,7 @@ class Schema08PatchDataset(Dataset):
         cache_samples: bool = False,
         limit_samples: int | None = None,
         patches_per_epoch: int | None = None,
+        augmentation: bool = False,
     ) -> None:
         self.manifest_path = manifest_path
         self.rows = [row for row in read_manifest(manifest_path) if row["split"] == split]
@@ -134,6 +150,7 @@ class Schema08PatchDataset(Dataset):
         self.foreground_fraction = float(foreground_fraction)
         self.seed = int(seed)
         self.cache_samples = bool(cache_samples)
+        self.augmentation = bool(augmentation)
         self._cache: dict[str, dict[str, np.ndarray]] = {}
         if self.cache_samples:
             for row in self.rows:
@@ -153,6 +170,14 @@ class Schema08PatchDataset(Dataset):
         semantic_raw = arrays["real_compatible_semantic_mask"]
         skeleton = arrays["real_compatible_skeleton_mask"].astype(np.float32)
         uncertain = arrays["real_compatible_uncertain_ignore_mask"].astype(bool) | (semantic_raw == 255)
+        uncertain_distance = (
+            distance_transform_edt(~uncertain).astype(np.float32)
+            if uncertain.any() else np.full(uncertain.shape, np.inf, dtype=np.float32)
+        )
+        skeleton_valid = arrays.get(
+            "real_compatible_skeleton_valid_mask",
+            np.ones_like(semantic_raw, dtype=np.uint8),
+        ).astype(bool) & ~uncertain
         semantic = np.zeros_like(semantic_raw, dtype=np.int64)
         semantic[semantic_raw == 1] = 1
         semantic[semantic_raw == 3] = 2
@@ -160,15 +185,23 @@ class Schema08PatchDataset(Dataset):
         y0, x0 = self._patch_origin(row["sample_id"], patch_index, semantic_raw, uncertain)
         ps = self.patch_size
         valid = ~uncertain[y0 : y0 + ps, x0 : x0 + ps]
-        return {
+        sample = {
             "image": torch.from_numpy(image[y0 : y0 + ps, x0 : x0 + ps][None, ...].copy()),
             "semantic": torch.from_numpy(semantic[y0 : y0 + ps, x0 : x0 + ps].copy()),
             "skeleton": torch.from_numpy(skeleton[y0 : y0 + ps, x0 : x0 + ps][None, ...].copy()),
             "uncertain": torch.from_numpy(uncertain[y0 : y0 + ps, x0 : x0 + ps][None, ...].astype(np.float32).copy()),
+            "uncertain_distance": torch.from_numpy(
+                uncertain_distance[y0 : y0 + ps, x0 : x0 + ps][None, ...].copy()
+            ),
             "valid": torch.from_numpy(valid[None, ...].astype(np.float32).copy()),
+            "skeleton_valid": torch.from_numpy(
+                skeleton_valid[y0 : y0 + ps, x0 : x0 + ps][None, ...].astype(np.float32).copy()
+            ),
             "sample_id": row["sample_id"],
+            "source_image_id": row.get("source_image_id", row.get("parent_image_id", row["sample_id"])),
             "source_kind": row.get("source_kind", "synthetic"),
         }
+        return augment_sample(sample, self._item_seed(row["sample_id"], patch_index)) if self.augmentation else sample
 
     def _load_arrays(self, row: dict[str, str]) -> dict[str, np.ndarray]:
         path = resolve_path(row["npz_path"], self.manifest_path)
@@ -212,6 +245,24 @@ class Schema08PatchDataset(Dataset):
         return int.from_bytes(digest[:8], "little", signed=False)
 
 
+def augment_sample(sample: dict[str, torch.Tensor | str], seed: int) -> dict[str, torch.Tensor | str]:
+    rng = np.random.default_rng(seed)
+    dims = (-2, -1)
+    k = int(rng.integers(0, 4))
+    flip_y, flip_x = bool(rng.integers(0, 2)), bool(rng.integers(0, 2))
+    out = sample.copy()
+    for name, value in sample.items():
+        if not torch.is_tensor(value) or value.ndim < 2:
+            continue
+        transformed = torch.rot90(value, k, dims)
+        if flip_y:
+            transformed = torch.flip(transformed, [-2])
+        if flip_x:
+            transformed = torch.flip(transformed, [-1])
+        out[name] = transformed
+    return out
+
+
 class FixedRatioBatchSampler(torch.utils.data.Sampler[list[int]]):
     """Batch sampler for explicit synthetic:real patch ratios."""
 
@@ -223,31 +274,38 @@ class FixedRatioBatchSampler(torch.utils.data.Sampler[list[int]]):
         synthetic_real_ratio: str,
         seed: int = 123,
         batches_per_epoch: int | None = None,
+        real_rows: list[dict[str, str]] | None = None,
+        real_sampling_weights: str | None = None,
     ) -> None:
-        if synthetic_len <= 0 or real_len <= 0:
-            raise ValueError("mixed training requires non-empty synthetic and real datasets")
+        if synthetic_len < 0 or real_len < 0 or synthetic_len + real_len <= 0:
+            raise ValueError("training requires at least one sample")
         self.synthetic_len = int(synthetic_len)
         self.real_len = int(real_len)
         self.batch_size = int(batch_size)
         self.seed = int(seed)
         self.synthetic_per_batch, self.real_per_batch = batch_counts(batch_size, synthetic_real_ratio)
-        default_batches = max(
-            int(np.ceil(self.synthetic_len / self.synthetic_per_batch)),
-            int(np.ceil(self.real_len / self.real_per_batch)),
-        )
+        synth_batches = int(np.ceil(self.synthetic_len / self.synthetic_per_batch)) if self.synthetic_per_batch else 0
+        real_batches = int(np.ceil(self.real_len / self.real_per_batch)) if self.real_per_batch else 0
+        default_batches = max(synth_batches, real_batches)
         self.batches_per_epoch = int(batches_per_epoch) if batches_per_epoch is not None else default_batches
+        self.real_rows = real_rows
+        self.real_sampling_weights = real_sampling_weights
 
     def __len__(self) -> int:
         return self.batches_per_epoch
 
     def __iter__(self):
         rng = np.random.default_rng(self.seed)
-        synth_order = shuffled_cycle(self.synthetic_len, rng)
-        real_order = shuffled_cycle(self.real_len, rng)
+        synth_order = shuffled_cycle(self.synthetic_len, rng) if self.synthetic_per_batch else None
+        real_order = (
+            balanced_real_index_stream(self.real_rows, rng, self.real_sampling_weights)
+            if self.real_per_batch and self.real_rows is not None
+            else shuffled_cycle(self.real_len, rng) if self.real_per_batch else None
+        )
         real_offset = self.synthetic_len
         for _ in range(self.batches_per_epoch):
-            batch = [next(synth_order) for _ in range(self.synthetic_per_batch)]
-            batch += [real_offset + next(real_order) for _ in range(self.real_per_batch)]
+            batch = [next(synth_order) for _ in range(self.synthetic_per_batch)] if synth_order else []
+            batch += [real_offset + next(real_order) for _ in range(self.real_per_batch)] if real_order else []
             rng.shuffle(batch)
             yield batch
 
@@ -265,11 +323,68 @@ def batch_counts(batch_size: int, synthetic_real_ratio: str) -> tuple[int, int]:
     if len(parts) != 2:
         raise ValueError("synthetic_real_ratio must look like '80:20' or '90:10'")
     synth, real = (float(part) for part in parts)
-    if synth <= 0 or real <= 0:
-        raise ValueError("synthetic_real_ratio requires positive synthetic and real parts")
+    if synth < 0 or real < 0 or synth + real <= 0:
+        raise ValueError("synthetic_real_ratio requires non-negative parts with a positive total")
+    if synth == 0:
+        return 0, batch_size
+    if real == 0:
+        return batch_size, 0
     real_count = int(round(batch_size * real / (synth + real)))
     real_count = min(max(real_count, 1), batch_size - 1)
     return batch_size - real_count, real_count
+
+
+REAL_PATCH_CATEGORIES = (
+    "fibrous_positive",
+    "clump_positive",
+    "uncertain_positive",
+    "dense_or_fibrous_clump_boundary",
+    "background_hard_negative",
+    "uniform_random",
+)
+
+
+def parse_sampling_weights(raw: str | None) -> dict[str, float]:
+    if raw is None:
+        return {name: 1.0 for name in REAL_PATCH_CATEGORIES}
+    weights = {name: 0.0 for name in REAL_PATCH_CATEGORIES}
+    for item in raw.split(","):
+        name, separator, value = item.strip().partition("=")
+        if not separator or name not in weights:
+            raise ValueError(f"invalid real sampling weight {item!r}")
+        weights[name] = float(value)
+    if any(value < 0 for value in weights.values()) or sum(weights.values()) <= 0:
+        raise ValueError("real sampling weights must be non-negative with a positive total")
+    return weights
+
+
+def balanced_real_index_stream(
+    rows: list[dict[str, str]],
+    rng: np.random.Generator,
+    raw_weights: str | None,
+):
+    weights = parse_sampling_weights(raw_weights)
+    parent_categories: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+    for index, row in enumerate(rows):
+        parent = row.get("source_image_id", row.get("parent_image_id", row["sample_id"]))
+        categories = set(row.get("sampling_categories", "uniform_random").split(";"))
+        categories.add("uniform_random")
+        for category in categories & set(weights):
+            parent_categories[parent][category].append(index)
+    parents = sorted(
+        parent for parent, categories in parent_categories.items()
+        if any(weights[category] > 0 for category in categories)
+    )
+    if not parents:
+        raise ValueError("no real crops match the configured sampling categories")
+    while True:
+        parent = parents[int(rng.integers(0, len(parents)))]
+        categories = [name for name in sorted(parent_categories[parent]) if weights[name] > 0]
+        probabilities = np.asarray([weights[name] for name in categories], dtype=np.float64)
+        probabilities /= probabilities.sum()
+        category = categories[int(rng.choice(len(categories), p=probabilities))]
+        indices = parent_categories[parent][category]
+        yield indices[int(rng.integers(0, len(indices)))]
 
 
 class ConvBlock(nn.Module):
@@ -415,6 +530,9 @@ def compute_loss(
     uncertainty_focal_gamma: float = 2.0,
     uncertainty_pos_weight: str = "auto",
     uncertain_skeleton_policy: str = "ignore",
+    lambda_uncertain_fibrous: float = 0.0,
+    uncertain_fibrous_tau: float = 0.5,
+    rejection_near_distance: float = 20.0,
     lambda_clump_anti_fibrous: float = 0.0,
     lambda_clump_anti_skeleton: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
@@ -431,15 +549,26 @@ def compute_loss(
     skeleton_loss = (skeleton_loss_map * skeleton_valid).sum() / skeleton_valid.sum().clamp_min(1.0)
     uncertainty_loss = None
     total = semantic_loss + float(lambda_skeleton) * skeleton_loss
+    rejection_parts: dict[str, float] = {}
     if "uncertainty_logits" in outputs and lambda_uncertainty > 0:
-        uncertainty_loss = uncertainty_loss_value(
-            outputs["uncertainty_logits"],
-            batch["uncertain"],
-            uncertainty_loss_name,
-            uncertainty_focal_gamma,
-            uncertainty_pos_weight,
-        )
+        if uncertainty_loss_name == "stratified_bce":
+            uncertainty_loss, rejection_parts = stratified_rejection_loss(
+                outputs["uncertainty_logits"], batch, rejection_near_distance
+            )
+        else:
+            uncertainty_loss = uncertainty_loss_value(
+                outputs["uncertainty_logits"],
+                batch["uncertain"],
+                uncertainty_loss_name,
+                uncertainty_focal_gamma,
+                uncertainty_pos_weight,
+            )
         total = total + float(lambda_uncertainty) * uncertainty_loss
+    uncertain_fibrous_loss = uncertain_fibrous_suppression_loss(
+        outputs["semantic_logits"], batch.get("uncertain", torch.zeros_like(batch["skeleton"])), uncertain_fibrous_tau
+    )
+    if lambda_uncertain_fibrous > 0:
+        total = total + float(lambda_uncertain_fibrous) * uncertain_fibrous_loss
     clump_mask = ((batch["semantic"] == 2).unsqueeze(1) & (batch["valid"] > 0))
     clump_anti_fibrous_loss = masked_mean(
         semantic_prob(outputs["semantic_logits"])[:, 1:2],
@@ -454,15 +583,80 @@ def compute_loss(
         "loss": float(total.detach().cpu()),
         "semantic_loss": float(semantic_loss.detach().cpu()),
         "skeleton_loss": float(skeleton_loss.detach().cpu()),
+        "uncertain_fibrous_loss": float(uncertain_fibrous_loss.detach().cpu()),
         "clump_anti_fibrous_loss": float(clump_anti_fibrous_loss.detach().cpu()),
         "clump_anti_skeleton_loss": float(clump_anti_skeleton_loss.detach().cpu()),
     }
     if uncertainty_loss is not None:
         parts["uncertainty_loss"] = float(uncertainty_loss.detach().cpu())
+        parts.update(rejection_parts)
     return total, parts
 
 
+def uncertain_fibrous_suppression_loss(
+    semantic_logits: torch.Tensor,
+    uncertain: torch.Tensor,
+    tau: float = 0.5,
+) -> torch.Tensor:
+    excess = torch.relu(semantic_prob(semantic_logits)[:, 1:2] - float(tau)).square()
+    return masked_mean(excess, uncertain > 0.5)
+
+
+def stratified_rejection_loss(
+    logits: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+    near_distance: float = 20.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    target = batch["uncertain"]
+    semantic = batch["semantic"].unsqueeze(1)
+    distance = batch["uncertain_distance"]
+    bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    near = distance <= float(near_distance)
+    masks = {
+        "positive": target > 0.5,
+        "near_fibrous": (semantic == 1) & near,
+        "near_clump": (semantic == 2) & near,
+        "far_tau": ((semantic == 1) | (semantic == 2)) & ~near,
+        "background": semantic == 0,
+    }
+    means = {name: masked_mean_or_none(bce, mask) for name, mask in masks.items()}
+    negative = weighted_present_mean(means, {
+        "near_fibrous": 0.30,
+        "near_clump": 0.20,
+        "far_tau": 0.25,
+        "background": 0.25,
+    })
+    loss = weighted_present_mean({"positive": means["positive"], "negative": negative}, {
+        "positive": 0.5, "negative": 0.5,
+    })
+    parts = {
+        f"rejection_{name}_loss": float(value.detach().cpu())
+        for name, value in means.items() if value is not None
+    }
+    return loss, parts
+
+
+def masked_mean_or_none(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
+    return values[mask].mean() if bool(mask.any()) else None
+
+
+def weighted_present_mean(
+    values: dict[str, torch.Tensor | None],
+    weights: dict[str, float],
+) -> torch.Tensor:
+    present = [(values[name], weight) for name, weight in weights.items() if values.get(name) is not None]
+    if not present:
+        reference = next((value for value in values.values() if value is not None), None)
+        if reference is None:
+            raise ValueError("stratified rejection loss has no populated strata")
+        return reference * 0.0
+    total_weight = sum(weight for _, weight in present)
+    return sum(value * weight for value, weight in present if value is not None) / total_weight
+
+
 def skeleton_valid_mask(batch: dict[str, torch.Tensor], policy: str) -> torch.Tensor:
+    if "skeleton_valid" in batch:
+        return batch["skeleton_valid"] * batch["valid"]
     if policy == "ignore":
         return batch["valid"]
     if policy == "suppress":
@@ -549,6 +743,9 @@ def evaluate_model(
     uncertainty_focal_gamma: float = 2.0,
     uncertainty_pos_weight: str = "auto",
     uncertain_skeleton_policy: str = "ignore",
+    lambda_uncertain_fibrous: float = 0.0,
+    uncertain_fibrous_tau: float = 0.5,
+    rejection_near_distance: float = 20.0,
     lambda_clump_anti_fibrous: float = 0.0,
     lambda_clump_anti_skeleton: float = 0.0,
 ) -> dict[str, float | str]:
@@ -587,6 +784,9 @@ def evaluate_model(
                 uncertainty_focal_gamma,
                 uncertainty_pos_weight,
                 uncertain_skeleton_policy,
+                lambda_uncertain_fibrous,
+                uncertain_fibrous_tau,
+                rejection_near_distance,
                 lambda_clump_anti_fibrous,
                 lambda_clump_anti_skeleton,
             )
@@ -594,6 +794,7 @@ def evaluate_model(
             pred_sem = outputs["semantic_logits"].argmax(dim=1)
             target_sem = batch["semantic"]
             valid = target_sem != IGNORE_INDEX
+            skeleton_valid = batch.get("skeleton_valid", batch["valid"])[:, 0] > 0.5
             skeleton_prob = torch.sigmoid(outputs["skeleton_logits"][:, 0])
             pred_skel = skeleton_prob > skeleton_threshold
             true_skel = batch["skeleton"][:, 0] > 0.5
@@ -632,32 +833,35 @@ def evaluate_model(
                         uncertain_recall.append(float(uncertain_tp / true_uncertain_count))
                 if uncertainty_prob is not None:
                     append_region_probabilities(uncertainty_probs, uncertainty_prob[b], target_sem[b], true_uncertain[b])
-                skel = target_positive_dice(pred_skel[b], true_skel[b], valid[b])
+                skel = target_positive_dice(pred_skel[b], true_skel[b], skeleton_valid[b])
                 if skel is not None:
                     skeleton_dice.append(skel)
-                pred_count = int((pred_skel[b] & valid[b]).sum())
-                true_count = int((true_skel[b] & valid[b]).sum())
-                tp = int((pred_skel[b] & true_skel[b] & valid[b]).sum())
+                pred_count = int((pred_skel[b] & skeleton_valid[b]).sum())
+                true_count = int((true_skel[b] & skeleton_valid[b]).sum())
+                tp = int((pred_skel[b] & true_skel[b] & skeleton_valid[b]).sum())
                 if pred_count:
                     skeleton_precision.append(float(tp / pred_count))
-                    pred_inside_pred_fibrous.append(float(((pred_skel[b] & (pred_sem[b] == 1) & valid[b]).sum() / pred_count).cpu()))
-                    pred_inside_true_fibrous.append(float(((pred_skel[b] & (target_sem[b] == 1) & valid[b]).sum() / pred_count).cpu()))
+                    pred_inside_pred_fibrous.append(float(((pred_skel[b] & (pred_sem[b] == 1) & skeleton_valid[b]).sum() / pred_count).cpu()))
+                    pred_inside_true_fibrous.append(float(((pred_skel[b] & (target_sem[b] == 1) & skeleton_valid[b]).sum() / pred_count).cpu()))
                 if true_count:
                     skeleton_recall.append(float(tp / true_count))
                 for threshold, metrics in threshold_metrics.items():
                     pred_at_threshold = skeleton_prob[b] > threshold
-                    threshold_skel = target_positive_dice(pred_at_threshold, true_skel[b], valid[b])
+                    threshold_skel = target_positive_dice(pred_at_threshold, true_skel[b], skeleton_valid[b])
                     if threshold_skel is not None:
                         metrics["dice"].append(threshold_skel)
-                    pred_at_count = int((pred_at_threshold & valid[b]).sum())
+                    pred_at_count = int((pred_at_threshold & skeleton_valid[b]).sum())
                     if pred_at_count:
-                        metrics["precision"].append(float(int((pred_at_threshold & true_skel[b] & valid[b]).sum()) / pred_at_count))
+                        metrics["precision"].append(float(int((pred_at_threshold & true_skel[b] & skeleton_valid[b]).sum()) / pred_at_count))
                     if true_count:
-                        metrics["recall"].append(float(int((pred_at_threshold & true_skel[b] & valid[b]).sum()) / true_count))
+                        metrics["recall"].append(
+                            float(int((pred_at_threshold & true_skel[b] & skeleton_valid[b]).sum()) / true_count)
+                        )
     result = {
         "loss": mean_metric(losses, "loss"),
         "semantic_loss": mean_metric(losses, "semantic_loss"),
         "skeleton_loss": mean_metric(losses, "skeleton_loss"),
+        "uncertain_fibrous_loss": mean_metric(losses, "uncertain_fibrous_loss"),
         "clump_anti_fibrous_loss": mean_metric(losses, "clump_anti_fibrous_loss"),
         "clump_anti_skeleton_loss": mean_metric(losses, "clump_anti_skeleton_loss"),
         "fibrous_dice": mean_or_na(fibrous_dice),
@@ -704,6 +908,76 @@ def append_region_probabilities(
             out[name].extend(values.detach().cpu().float().tolist())
 
 
+def evaluate_real_per_image(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    skeleton_threshold: float = 0.5,
+) -> dict[str, Any]:
+    """Macro validation metrics accumulated per parent image, never pooled globally."""
+    model.eval()
+    counts: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    with torch.no_grad():
+        for batch in loader:
+            parent_ids = list(batch["source_image_id"])
+            device_batch = tensor_batch_to_device(batch, device)
+            outputs = model(device_batch["image"])
+            pred_semantic = outputs["semantic_logits"].argmax(dim=1).detach().cpu().numpy()
+            pred_skeleton = (
+                torch.sigmoid(outputs["skeleton_logits"][:, 0]) > skeleton_threshold
+            ).detach().cpu().numpy()
+            target_semantic = batch["semantic"].numpy()
+            target_skeleton = batch["skeleton"][:, 0].numpy() > 0.5
+            valid = batch["valid"][:, 0].numpy() > 0.5
+            skeleton_valid = batch.get("skeleton_valid", batch["valid"])[:, 0].numpy() > 0.5
+            for index, parent in enumerate(parent_ids):
+                target_fibrous = (target_semantic[index] == 1) & valid[index]
+                predicted_fibrous = (pred_semantic[index] == 1) & valid[index]
+                predicted_clump = (pred_semantic[index] == 2) & valid[index]
+                target_clump = (target_semantic[index] == 2) & valid[index]
+                values = counts[parent]
+                values["fibrous_tp"] += int(np.count_nonzero(predicted_fibrous & target_fibrous))
+                values["fibrous_pred"] += int(np.count_nonzero(predicted_fibrous))
+                values["fibrous_target"] += int(np.count_nonzero(target_fibrous))
+                values["clump_pred"] += int(np.count_nonzero(predicted_clump))
+                values["clump_leak"] += int(np.count_nonzero(predicted_clump & ~target_clump))
+                target_line = target_skeleton[index] & skeleton_valid[index]
+                predicted_line = pred_skeleton[index] & skeleton_valid[index]
+                values["skeleton_target"] += int(np.count_nonzero(target_line))
+                if target_line.any() and predicted_line.any():
+                    values["skeleton_recovered_2px"] += int(
+                        np.count_nonzero(target_line & (distance_transform_edt(~predicted_line) <= 2.0))
+                    )
+    per_image = {parent: per_image_metrics(values) for parent, values in sorted(counts.items())}
+    return {
+        "selection_scope": "macro_per_parent_image",
+        "image_count": len(per_image),
+        "macro_image_fibrous_dice": macro_metric(per_image, "fibrous_dice"),
+        "macro_image_fibrous_area_ratio": macro_metric(per_image, "fibrous_area_ratio"),
+        "macro_image_clump_leakage": macro_metric(per_image, "clump_leakage"),
+        "macro_image_skeleton_recovery_2px": macro_metric(per_image, "skeleton_recovery_2px"),
+        "per_image": per_image,
+    }
+
+
+def per_image_metrics(values: dict[str, float]) -> dict[str, float | str]:
+    fibrous_denom = values["fibrous_pred"] + values["fibrous_target"]
+    return {
+        "fibrous_dice": 2.0 * values["fibrous_tp"] / fibrous_denom if fibrous_denom else "not_applicable",
+        "fibrous_area_ratio": values["fibrous_pred"] / values["fibrous_target"] if values["fibrous_target"] else "not_applicable",
+        "clump_leakage": values["clump_leak"] / values["clump_pred"] if values["clump_pred"] else 0.0,
+        "skeleton_recovery_2px": (
+            values["skeleton_recovered_2px"] / values["skeleton_target"]
+            if values["skeleton_target"] else "not_applicable"
+        ),
+    }
+
+
+def macro_metric(per_image: dict[str, dict[str, float | str]], name: str) -> float | str:
+    values = [float(metrics[name]) for metrics in per_image.values() if isinstance(metrics[name], (int, float))]
+    return float(np.mean(values)) if values else "not_applicable"
+
+
 def probability_summary(values: list[float]) -> dict[str, float | str]:
     if not values:
         return {"mean": "not_applicable", "p95": "not_applicable"}
@@ -725,10 +999,15 @@ def tensor_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[
 
 
 def choose_device(requested: str) -> torch.device:
-    if requested == "auto":
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(requested)
+    try:
+        device = (
+            torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            if requested == "auto" else torch.device(requested)
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise DeviceSelectionError(f"invalid device {requested!r}: {exc}") from exc
+    if device.type not in {"cpu", "cuda"}:
+        raise DeviceSelectionError(f"unsupported device type {device.type!r}; use cpu or cuda:N")
     if device.type == "cuda":
         validate_cuda_device(device)
     return device
@@ -762,12 +1041,18 @@ def device_report(device: torch.device) -> dict[str, Any]:
         "torch_cuda_version": torch.version.cuda,
         "cudnn_version": torch.backends.cudnn.version(),
         "cuda_devices": [],
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", "not_set"),
+        "selected_logical_device": str(device),
+        "selected_gpu_name": None,
     }
     if torch.cuda.is_available():
         report["cuda_current_device"] = torch.cuda.current_device()
         report["cuda_devices"] = [
             {"index": i, "name": torch.cuda.get_device_name(i)} for i in range(torch.cuda.device_count())
         ]
+        if device.type == "cuda":
+            index = torch.cuda.current_device() if device.index is None else device.index
+            report["selected_gpu_name"] = torch.cuda.get_device_name(index)
     return report
 
 
@@ -827,6 +1112,9 @@ def checkpoint_payload(
     epoch: int,
     val_metrics: dict[str, Any],
     real_val_metrics: dict[str, Any] | None,
+    optimizer: torch.optim.Optimizer | None = None,
+    training_state: dict[str, Any] | None = None,
+    checkpoint_kind: str = "epoch",
 ) -> dict[str, Any]:
     return {
         "model_state_dict": model.state_dict(),
@@ -834,6 +1122,15 @@ def checkpoint_payload(
         "epoch": int(epoch),
         "validation_metrics": val_metrics,
         "real_validation_metrics": real_val_metrics,
+        "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
+        "training_state": training_state or {},
+        "checkpoint_metadata": {
+            "kind": checkpoint_kind,
+            "model_variant": config.model_variant,
+            "uncertainty_head": config.enable_uncertainty_head,
+            "selection_metric": config.best_metric,
+            "selection_scope": "macro_per_parent_image" if config.real_manifest else "validation_dataset",
+        },
     }
 
 
@@ -844,9 +1141,18 @@ def save_training_checkpoint(
     epoch: int,
     val_metrics: dict[str, Any],
     real_val_metrics: dict[str, Any] | None,
+    optimizer: torch.optim.Optimizer | None = None,
+    training_state: dict[str, Any] | None = None,
+    checkpoint_kind: str = "epoch",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(checkpoint_payload(model, config, epoch, val_metrics, real_val_metrics), path)
+    torch.save(
+        checkpoint_payload(
+            model, config, epoch, val_metrics, real_val_metrics,
+            optimizer, training_state, checkpoint_kind,
+        ),
+        path,
+    )
 
 
 def validation_metric_values(metrics: dict[str, Any]) -> dict[str, float]:
@@ -894,6 +1200,14 @@ def checkpoint_summary(
 
 def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[str, Any]:
     seed_everything(config.seed)
+    if config.init_checkpoint and config.resume_checkpoint:
+        raise ValueError("init_checkpoint and resume_checkpoint are mutually exclusive")
+    if config.real_manifest and not config.best_metric.startswith("macro_image_"):
+        raise ValueError("real fine-tuning checkpoint selection requires a macro_image_* best_metric")
+    if config.real_manifest and config.synthetic_real_ratio is None:
+        raise ValueError("real fine-tuning requires synthetic_real_ratio, including 0:100 for real only")
+    if config.stage1_epochs > 0 and config.learning_rate >= config.stage1_learning_rate:
+        raise ValueError("stage 2 learning_rate must be lower than stage1_learning_rate")
     out = Path(config.out)
     out.mkdir(parents=True, exist_ok=True)
     best_mode = resolve_best_mode(config.best_metric, config.best_mode)
@@ -906,19 +1220,20 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
     else:
         log_status("CUDA is not available to PyTorch; using CPU")
     save_json(out / "config.json", {**asdict(config), "resolved_device": str(device)})
-    log_status("loading training split")
-    train_ds = Schema08PatchDataset(
-        Path(config.manifest),
-        "train",
-        config.patch_size,
-        config.patches_per_sample,
-        config.foreground_fraction,
-        config.seed,
-        config.cache_samples,
-        config.limit_train_samples,
-        config.patches_per_epoch,
+    real_only = bool(
+        config.real_manifest and config.synthetic_real_ratio
+        and batch_counts(config.batch_size, config.synthetic_real_ratio)[0] == 0
     )
-    log_status(f"training samples: {len(train_ds.rows)}; patches per epoch: {len(train_ds)}")
+    train_ds = None
+    val_ds = None
+    if not real_only:
+        log_status("loading synthetic training split")
+        train_ds = Schema08PatchDataset(
+            Path(config.manifest), "train", config.patch_size, config.patches_per_sample,
+            config.foreground_fraction, config.seed, config.cache_samples,
+            config.limit_train_samples, config.patches_per_epoch, config.augmentation,
+        )
+        log_status(f"training samples: {len(train_ds.rows)}; patches per epoch: {len(train_ds)}")
     real_train_ds = None
     real_val_ds = None
     if config.real_manifest is not None:
@@ -931,6 +1246,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             config.foreground_fraction,
             config.seed + 200_000,
             config.cache_samples,
+            augmentation=config.augmentation,
         )
         real_val_ds = Schema08PatchDataset(
             Path(config.real_manifest),
@@ -943,30 +1259,25 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             config.limit_val_samples,
         )
         log_status(f"real training crops: {len(real_train_ds.rows)}; real validation crops: {len(real_val_ds.rows)}")
-    log_status("loading validation split")
-    val_ds = Schema08PatchDataset(
-        Path(config.manifest),
-        "validation",
-        config.patch_size,
-        config.validation_patches_per_sample,
-        config.foreground_fraction,
-        config.seed + 100_000,
-        config.cache_samples,
-        config.limit_val_samples,
-    )
-    log_status(f"validation samples: {len(val_ds.rows)}; validation patches: {len(val_ds)}")
+    if not real_only:
+        log_status("loading synthetic validation split")
+        val_ds = Schema08PatchDataset(
+            Path(config.manifest), "validation", config.patch_size,
+            config.validation_patches_per_sample, config.foreground_fraction,
+            config.seed + 100_000, config.cache_samples, config.limit_val_samples,
+        )
+        log_status(f"validation samples: {len(val_ds.rows)}; validation patches: {len(val_ds)}")
     log_status("collecting run metadata and target pixel counts")
     metadata = run_metadata(config, train_ds, val_ds, device, real_train_ds, real_val_ds)
     save_json(out / "run_metadata.json", metadata)
     log_status(f"wrote metadata: {out / 'run_metadata.json'}")
     generator = torch.Generator().manual_seed(config.seed)
     train_loader = build_train_loader(config, train_ds, real_train_ds, generator, device)
-    val_loader = torch.utils.data.DataLoader(
-        val_ds,
-        batch_size=config.batch_size,
-        shuffle=False,
-        num_workers=config.num_workers,
-        pin_memory=device.type == "cuda",
+    val_loader = (
+        torch.utils.data.DataLoader(
+            val_ds, batch_size=config.batch_size, shuffle=False,
+            num_workers=config.num_workers, pin_memory=device.type == "cuda",
+        ) if val_ds is not None else None
     )
     real_val_loader = None
     if real_val_ds is not None:
@@ -978,7 +1289,8 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             pin_memory=device.type == "cuda",
         )
     model = build_model(config).to(device)
-    checkpoint_report = load_initial_checkpoint(model, config.init_checkpoint, device)
+    resume_payload = load_resume_checkpoint(model, config.resume_checkpoint, device) if config.resume_checkpoint else None
+    checkpoint_report = load_initial_checkpoint(model, config.init_checkpoint, device) if resume_payload is None else None
     if checkpoint_report is not None:
         log_status(
             "loaded initial checkpoint: "
@@ -988,24 +1300,42 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
         )
         metadata["initial_checkpoint"] = checkpoint_report
         save_json(out / "run_metadata.json", metadata)
+    if resume_payload is not None:
+        metadata["resume_checkpoint"] = {
+            "path": str(config.resume_checkpoint),
+            "epoch": int(resume_payload.get("epoch", 0)),
+        }
+        save_json(out / "run_metadata.json", metadata)
     if tracker is not None:
         log_status("initializing W&B tracking")
         tracker.start(config, metadata)
         seed_everything(config.seed)
         log_status("W&B tracking initialized")
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    start_epoch = int(resume_payload.get("epoch", 0)) + 1 if resume_payload else 1
+    stage = fine_tuning_stage(start_epoch, config.stage1_epochs)
+    optimizer = optimizer_for_stage(model, config, stage)
+    resumed_stage = resume_payload.get("training_state", {}).get("fine_tuning_stage") if resume_payload else None
+    if resume_payload and resume_payload.get("optimizer_state_dict") and resumed_stage == stage:
+        optimizer.load_state_dict(resume_payload["optimizer_state_dict"])
     log_rows: list[dict[str, float | int]] = []
     validation_values_by_epoch: dict[str, dict[str, float]] = {}
-    best_value: float | None = None
-    best_epoch: int | None = None
-    patience_counter = 0
+    resumed_state = resume_payload.get("training_state", {}) if resume_payload else {}
+    best_value: float | None = resumed_state.get("best_value")
+    best_epoch: int | None = resumed_state.get("best_epoch")
+    patience_counter = int(resumed_state.get("patience_counter", 0))
+    validation_values_by_epoch.update(resumed_state.get("validation_metric_values_by_epoch", {}))
     stopped_early = False
     early_stop_reason: str | None = None
     periodic_checkpoint_paths: list[str] = []
     final_epoch = 0
     final_metric_value: float | None = None
     try:
-        for epoch in range(1, config.epochs + 1):
+        for epoch in range(start_epoch, config.epochs + 1):
+            expected_stage = fine_tuning_stage(epoch, config.stage1_epochs)
+            if expected_stage != stage:
+                stage = expected_stage
+                optimizer = optimizer_for_stage(model, config, stage)
+                log_status(f"switched to {stage} at learning_rate={optimizer.param_groups[0]['lr']}")
             log_status(f"epoch {epoch}/{config.epochs}: training")
             model.train()
             running: list[dict[str, float]] = []
@@ -1023,6 +1353,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                     config.uncertainty_focal_gamma,
                     config.uncertainty_pos_weight,
                     config.uncertain_skeleton_policy,
+                    config.lambda_uncertain_fibrous,
+                    config.uncertain_fibrous_tau,
+                    config.rejection_near_distance,
                     config.lambda_clump_anti_fibrous,
                     config.lambda_clump_anti_skeleton,
                 )
@@ -1030,9 +1363,11 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 optimizer.step()
                 running.append(parts)
             log_status(f"epoch {epoch}/{config.epochs}: validating")
+            validation_loader = val_loader if val_loader is not None else real_val_loader
+            assert validation_loader is not None
             val_metrics = evaluate_model(
                 model,
-                val_loader,
+                validation_loader,
                 device,
                 config.lambda_skeleton,
                 config.skeleton_pos_weight,
@@ -1042,6 +1377,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 config.uncertainty_focal_gamma,
                 config.uncertainty_pos_weight,
                 config.uncertain_skeleton_policy,
+                config.lambda_uncertain_fibrous,
+                config.uncertain_fibrous_tau,
+                config.rejection_near_distance,
                 config.lambda_clump_anti_fibrous,
                 config.lambda_clump_anti_skeleton,
             )
@@ -1058,11 +1396,18 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                     config.uncertainty_focal_gamma,
                     config.uncertainty_pos_weight,
                     config.uncertain_skeleton_policy,
+                    config.lambda_uncertain_fibrous,
+                    config.uncertain_fibrous_tau,
+                    config.rejection_near_distance,
                     config.lambda_clump_anti_fibrous,
                     config.lambda_clump_anti_skeleton,
                 )
-                if real_val_loader is not None
-                else None
+                if real_val_loader is not None and val_loader is not None
+                else val_metrics if real_val_loader is not None else None
+            )
+            real_image_metrics = (
+                evaluate_real_per_image(model, real_val_loader, device, config.skeleton_threshold)
+                if real_val_loader is not None else None
             )
             row = {
                 "epoch": epoch,
@@ -1077,10 +1422,11 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 row["train_uncertainty_loss"] = mean_metric(running, "uncertainty_loss")
             row["train_clump_anti_fibrous_loss"] = mean_metric(running, "clump_anti_fibrous_loss")
             row["train_clump_anti_skeleton_loss"] = mean_metric(running, "clump_anti_skeleton_loss")
-            current_value = selected_validation_metric(val_metrics, config.best_metric)
+            selection_metrics = real_image_metrics if real_image_metrics is not None else val_metrics
+            current_value = selected_validation_metric(selection_metrics, config.best_metric)
             final_epoch = epoch
             final_metric_value = current_value
-            validation_values_by_epoch[str(epoch)] = validation_metric_values(val_metrics)
+            validation_values_by_epoch[str(epoch)] = validation_metric_values(selection_metrics)
             improved = best_metric_improved(current_value, best_value, best_mode, config.early_stop_min_delta)
             if improved:
                 best_value = current_value
@@ -1088,7 +1434,16 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 patience_counter = 0
                 if config.save_best_checkpoint:
                     best_checkpoint_path = out / "model_best.pt"
-                    save_training_checkpoint(best_checkpoint_path, model, config, epoch, val_metrics, real_val_metrics)
+                    checkpoint_real_metrics = {
+                        "patch_metrics": real_val_metrics,
+                        "per_image_metrics": real_image_metrics,
+                    } if real_val_metrics is not None else None
+                    save_training_checkpoint(
+                        best_checkpoint_path, model, config, epoch, val_metrics,
+                        checkpoint_real_metrics, optimizer,
+                        training_state_payload(best_value, best_epoch, patience_counter, validation_values_by_epoch, stage),
+                        "best",
+                    )
                     log_status(
                         f"New best validation {config.best_metric}: {current_value:.4f} "
                         f"at epoch {epoch}; saved model_best.pt"
@@ -1097,7 +1452,16 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 patience_counter += 1
             if config.save_checkpoint_every > 0 and epoch % config.save_checkpoint_every == 0:
                 periodic_path = out / "checkpoints" / f"model_epoch_{epoch:04d}.pt"
-                save_training_checkpoint(periodic_path, model, config, epoch, val_metrics, real_val_metrics)
+                checkpoint_real_metrics = {
+                    "patch_metrics": real_val_metrics,
+                    "per_image_metrics": real_image_metrics,
+                } if real_val_metrics is not None else None
+                save_training_checkpoint(
+                    periodic_path, model, config, epoch, val_metrics,
+                    checkpoint_real_metrics, optimizer,
+                    training_state_payload(best_value, best_epoch, patience_counter, validation_values_by_epoch, stage),
+                    "periodic",
+                )
                 periodic_checkpoint_paths.append(str(periodic_path))
                 log_status(f"wrote periodic checkpoint: {periodic_path}")
             row["best_metric_value"] = current_value
@@ -1105,6 +1469,15 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             row["best_epoch"] = best_epoch if best_epoch is not None else epoch
             row["early_stop_patience_counter"] = patience_counter
             row["stopped_early"] = 0
+            row["fine_tuning_stage"] = stage
+            row["learning_rate"] = float(optimizer.param_groups[0]["lr"])
+            if real_image_metrics is not None:
+                for name in (
+                    "macro_image_fibrous_dice", "macro_image_fibrous_area_ratio",
+                    "macro_image_clump_leakage", "macro_image_skeleton_recovery_2px",
+                ):
+                    if isinstance(real_image_metrics[name], (int, float)):
+                        row[f"real_validation_{name}"] = float(real_image_metrics[name])
             log_rows.append(row)
             print(
                 f"epoch {epoch}: train_loss={row['train_loss']:.4f} "
@@ -1131,9 +1504,11 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
         write_log_csv(out / "training_log.csv", log_rows)
         log_status(f"wrote training log: {out / 'training_log.csv'}")
         log_status("running final validation")
+        validation_loader = val_loader if val_loader is not None else real_val_loader
+        assert validation_loader is not None
         val_metrics = evaluate_model(
             model,
-            val_loader,
+            validation_loader,
             device,
             config.lambda_skeleton,
             config.skeleton_pos_weight,
@@ -1143,6 +1518,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             config.uncertainty_focal_gamma,
             config.uncertainty_pos_weight,
             config.uncertain_skeleton_policy,
+            config.lambda_uncertain_fibrous,
+            config.uncertain_fibrous_tau,
+            config.rejection_near_distance,
             config.lambda_clump_anti_fibrous,
             config.lambda_clump_anti_skeleton,
         )
@@ -1159,21 +1537,43 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 config.uncertainty_focal_gamma,
                 config.uncertainty_pos_weight,
                 config.uncertain_skeleton_policy,
+                config.lambda_uncertain_fibrous,
+                config.uncertain_fibrous_tau,
+                config.rejection_near_distance,
                 config.lambda_clump_anti_fibrous,
                 config.lambda_clump_anti_skeleton,
             )
-            if real_val_loader is not None
-            else None
+            if real_val_loader is not None and val_loader is not None
+            else val_metrics if real_val_loader is not None else None
+        )
+        real_image_metrics = (
+            evaluate_real_per_image(model, real_val_loader, device, config.skeleton_threshold)
+            if real_val_loader is not None else None
         )
         if final_epoch > 0:
-            final_metric_value = selected_validation_metric(val_metrics, config.best_metric)
+            final_metric_value = selected_validation_metric(
+                real_image_metrics if real_image_metrics is not None else val_metrics,
+                config.best_metric,
+            )
         save_json(out / "validation_metrics.json", val_metrics)
         log_status(f"wrote validation metrics: {out / 'validation_metrics.json'}")
         if real_val_metrics is not None:
             save_json(out / "real_validation_metrics.json", real_val_metrics)
             log_status(f"wrote real validation metrics: {out / 'real_validation_metrics.json'}")
+        if real_image_metrics is not None:
+            save_json(out / "real_validation_per_image_metrics.json", real_image_metrics)
+            log_status(f"wrote real per-image metrics: {out / 'real_validation_per_image_metrics.json'}")
         checkpoint_path = out / "model.pt"
-        save_training_checkpoint(checkpoint_path, model, config, final_epoch, val_metrics, real_val_metrics)
+        checkpoint_real_metrics = {
+            "patch_metrics": real_val_metrics,
+            "per_image_metrics": real_image_metrics,
+        } if real_val_metrics is not None else None
+        save_training_checkpoint(
+            checkpoint_path, model, config, final_epoch, val_metrics,
+            checkpoint_real_metrics, optimizer,
+            training_state_payload(best_value, best_epoch, patience_counter, validation_values_by_epoch, stage),
+            "final",
+        )
         log_status(f"wrote checkpoint: {checkpoint_path}")
         save_json(
             out / "checkpoint_summary.json",
@@ -1195,7 +1595,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
         log_status(f"wrote checkpoint summary: {out / 'checkpoint_summary.json'}")
         if tracker is not None:
             tracker.log_checkpoint(checkpoint_path)
-        panel_paths = write_qa_panels(model, val_ds, device, out / "qa_panels", config.qa_panel_count, config.skeleton_threshold)
+        panel_dataset = val_ds if val_ds is not None else real_val_ds
+        assert panel_dataset is not None
+        panel_paths = write_qa_panels(model, panel_dataset, device, out / "qa_panels", config.qa_panel_count, config.skeleton_threshold)
         log_status(f"wrote QA panels: {out / 'qa_panels'}")
         if tracker is not None:
             tracker.log_qa_panels(panel_paths)
@@ -1203,6 +1605,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             "log": log_rows,
             "validation_metrics": val_metrics,
             "real_validation_metrics": real_val_metrics,
+            "real_validation_per_image_metrics": real_image_metrics,
             "device": str(device),
         }
     finally:
@@ -1212,17 +1615,20 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
 
 def run_metadata(
     config: BaselineConfig,
-    train_ds: Schema08PatchDataset,
-    val_ds: Schema08PatchDataset,
+    train_ds: Schema08PatchDataset | None,
+    val_ds: Schema08PatchDataset | None,
     device: torch.device,
     real_train_ds: Schema08PatchDataset | None = None,
     real_val_ds: Schema08PatchDataset | None = None,
 ) -> dict[str, Any]:
-    split_counts = {"train": len(train_ds.rows), "validation": len(val_ds.rows)}
+    split_counts = {
+        "train": len(train_ds.rows) if train_ds is not None else 0,
+        "validation": len(val_ds.rows) if val_ds is not None else 0,
+    }
     if real_train_ds is not None and real_val_ds is not None:
         split_counts["real_train"] = len(real_train_ds.rows)
         split_counts["real_validation"] = len(real_val_ds.rows)
-    rows = train_ds.rows + val_ds.rows
+    rows = (train_ds.rows if train_ds is not None else []) + (val_ds.rows if val_ds is not None else [])
     if real_train_ds is not None:
         rows += real_train_ds.rows
     if real_val_ds is not None:
@@ -1243,8 +1649,8 @@ def run_metadata(
         "generator_versions": sorted({row.get("generator_version", "unknown") or "unknown" for row in rows}),
         "dataset_paths": dataset_path_info(rows),
         "target_class_pixel_counts": {
-            "train": target_class_pixel_counts(train_ds),
-            "validation": target_class_pixel_counts(val_ds),
+            **({"train": target_class_pixel_counts(train_ds)} if train_ds is not None else {}),
+            **({"validation": target_class_pixel_counts(val_ds)} if val_ds is not None else {}),
             **({"real_train": target_class_pixel_counts(real_train_ds)} if real_train_ds is not None else {}),
             **({"real_validation": target_class_pixel_counts(real_val_ds)} if real_val_ds is not None else {}),
         },
@@ -1275,6 +1681,59 @@ def load_initial_checkpoint(
     }
 
 
+def load_resume_checkpoint(
+    model: nn.Module,
+    checkpoint_path: str,
+    device: torch.device,
+) -> dict[str, Any]:
+    path = Path(checkpoint_path)
+    if not path.exists():
+        raise FileNotFoundError(f"resume checkpoint not found: {path}")
+    checkpoint = torch.load(path, map_location=device)
+    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
+        raise ValueError(f"{path}: resume requires a complete training checkpoint")
+    model.load_state_dict(strip_module_prefix(checkpoint["model_state_dict"]))
+    return checkpoint
+
+
+def set_encoder_trainable(model: nn.Module, trainable: bool) -> None:
+    for name in ("enc1", "enc2", "enc3", "context"):
+        module = getattr(model, name, None)
+        if module is not None:
+            for parameter in module.parameters():
+                parameter.requires_grad = trainable
+
+
+def fine_tuning_stage(epoch: int, stage1_epochs: int) -> str:
+    return "stage1_frozen_encoder" if stage1_epochs > 0 and epoch <= stage1_epochs else "stage2_full_model"
+
+
+def optimizer_for_stage(model: nn.Module, config: BaselineConfig, stage: str) -> torch.optim.Optimizer:
+    frozen = stage == "stage1_frozen_encoder"
+    set_encoder_trainable(model, not frozen)
+    learning_rate = config.stage1_learning_rate if frozen else config.learning_rate
+    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    if not parameters:
+        raise ValueError(f"{stage}: no trainable model parameters")
+    return torch.optim.Adam(parameters, lr=learning_rate)
+
+
+def training_state_payload(
+    best_value: float | None,
+    best_epoch: int | None,
+    patience_counter: int,
+    validation_values_by_epoch: dict[str, dict[str, float]],
+    stage: str,
+) -> dict[str, Any]:
+    return {
+        "best_value": best_value,
+        "best_epoch": best_epoch,
+        "patience_counter": patience_counter,
+        "validation_metric_values_by_epoch": validation_values_by_epoch,
+        "fine_tuning_stage": stage,
+    }
+
+
 def strip_module_prefix(state: dict[str, Any]) -> dict[str, Any]:
     if not state or not all(key.startswith("module.") for key in state):
         return state
@@ -1283,12 +1742,14 @@ def strip_module_prefix(state: dict[str, Any]) -> dict[str, Any]:
 
 def build_train_loader(
     config: BaselineConfig,
-    synthetic_ds: Schema08PatchDataset,
+    synthetic_ds: Schema08PatchDataset | None,
     real_ds: Schema08PatchDataset | None,
     generator: torch.Generator,
     device: torch.device,
 ) -> torch.utils.data.DataLoader:
     if real_ds is None:
+        if synthetic_ds is None:
+            raise ValueError("no training dataset configured")
         return torch.utils.data.DataLoader(
             synthetic_ds,
             batch_size=config.batch_size,
@@ -1299,14 +1760,17 @@ def build_train_loader(
         )
     if config.synthetic_real_ratio is None:
         raise ValueError("--real-manifest requires --synthetic-real-ratio, for example 80:20")
-    mixed = torch.utils.data.ConcatDataset([synthetic_ds, real_ds])
+    synthetic_len = len(synthetic_ds) if synthetic_ds is not None else 0
+    mixed = torch.utils.data.ConcatDataset([synthetic_ds, real_ds]) if synthetic_ds is not None else real_ds
     sampler = FixedRatioBatchSampler(
-        len(synthetic_ds),
+        synthetic_len,
         len(real_ds),
         config.batch_size,
         config.synthetic_real_ratio,
         seed=config.seed,
         batches_per_epoch=config.patches_per_epoch,
+        real_rows=real_ds.rows,
+        real_sampling_weights=config.real_sampling_weights,
     )
     return torch.utils.data.DataLoader(
         mixed,
