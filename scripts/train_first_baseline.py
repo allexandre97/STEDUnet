@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-workers", "--num_workers", dest="num_workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--lambda-skeleton", "--lambda_skeleton", dest="lambda_skeleton", type=float, default=0.5)
+    parser.add_argument("--lambda-foreground", type=float, default=1.0)
+    parser.add_argument("--lambda-gate", type=float, default=0.5)
+    parser.add_argument("--lambda-morphology", type=float, default=1.0)
+    parser.add_argument("--lambda-joint", type=float, default=1.0)
+    parser.add_argument("--lambda-semantic", type=float, default=1.0)
+    parser.add_argument("--lambda-dice", type=float, default=0.0)
     parser.add_argument("--learning-rate", "--learning_rate", dest="learning_rate", type=float, default=1e-3)
     parser.add_argument("--patches-per-sample", "--patches_per_sample", dest="patches_per_sample", type=int, default=4)
     parser.add_argument(
@@ -136,7 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patches-per-epoch", "--patches_per_epoch", dest="patches_per_epoch", type=int)
     parser.add_argument("--qa-panel-count", "--qa_panel_count", dest="qa_panel_count", type=int, default=8)
     parser.add_argument("--real-manifest", "--real_manifest", dest="real_manifest")
-    parser.add_argument("--model-variant", "--model_variant", dest="model_variant", choices=["small_unet", "context_unet"], default="small_unet")
+    parser.add_argument(
+        "--model-variant", "--model_variant", dest="model_variant",
+        choices=["small_unet", "context_unet", "gated_context_unet", "four_class_context_unet"],
+        default="small_unet",
+    )
     parser.add_argument("--context-module", "--context_module", dest="context_module", choices=["none", "aspp"], default="none")
     parser.add_argument("--aspp-dilations", "--aspp_dilations", dest="aspp_dilations", default="1,2,4,8")
     parser.add_argument(
@@ -258,6 +268,12 @@ def config_from_args(args: argparse.Namespace) -> BaselineConfig:
         num_workers=args.num_workers,
         seed=args.seed,
         lambda_skeleton=args.lambda_skeleton,
+        lambda_foreground=args.lambda_foreground,
+        lambda_gate=args.lambda_gate,
+        lambda_morphology=args.lambda_morphology,
+        lambda_joint=args.lambda_joint,
+        lambda_semantic=args.lambda_semantic,
+        lambda_dice=args.lambda_dice,
         learning_rate=args.learning_rate,
         patches_per_sample=args.patches_per_sample,
         validation_patches_per_sample=args.validation_patches_per_sample,

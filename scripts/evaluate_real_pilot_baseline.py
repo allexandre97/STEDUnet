@@ -111,7 +111,10 @@ def import_torch():
 
 
 def load_model(checkpoint: Path | None, run_dir: Path | None, device_name: str, torch: Any) -> tuple[Any, Path, Any]:
-    from fibras.training.schema08_baseline import ContextUNet, SmallUNet, choose_device, parse_dilations, strip_module_prefix
+    from fibras.training.schema08_baseline import (
+        ContextUNet, FourClassContextUNet, GatedContextUNet, SmallUNet,
+        choose_device, parse_dilations, strip_module_prefix,
+    )
 
     device = choose_device(device_name)
     checkpoint_path = resolve_checkpoint_path(checkpoint, run_dir)
@@ -120,7 +123,17 @@ def load_model(checkpoint: Path | None, run_dir: Path | None, device_name: str, 
     state_dict = strip_module_prefix(state_dict)
     config = payload.get("config", {}) if isinstance(payload, dict) else {}
     has_uncertainty = checkpoint_has_uncertainty_head(payload, state_dict)
-    if isinstance(config, dict) and config.get("model_variant") == "context_unet":
+    if isinstance(config, dict) and config.get("model_variant") == "gated_context_unet":
+        model = GatedContextUNet(
+            context_module="aspp",
+            aspp_dilations=parse_dilations(config.get("aspp_dilations", "1,2,4,8")),
+        ).to(device)
+    elif isinstance(config, dict) and config.get("model_variant") == "four_class_context_unet":
+        model = FourClassContextUNet(
+            context_module="aspp",
+            aspp_dilations=parse_dilations(config.get("aspp_dilations", "1,2,4,8")),
+        ).to(device)
+    elif isinstance(config, dict) and config.get("model_variant") == "context_unet":
         model = ContextUNet(
             uncertainty_head=has_uncertainty,
             context_module=config.get("context_module", "none"),
@@ -184,9 +197,17 @@ def run_tiled_inference(
     pad_w = max(w, patch_size)
     padded = np.pad(image_f, ((0, pad_h - h), (0, pad_w - w)), mode="edge")
     starts = list(tile_origins(padded.shape, patch_size, overlap))
-    semantic_logits = np.zeros((3, *padded.shape), dtype=np.float32)
+    semantic_logits = None
     skeleton_logits = np.zeros(padded.shape, dtype=np.float32)
     uncertainty_logits = np.zeros(padded.shape, dtype=np.float32)
+    gated_logits = {
+        "foreground": np.zeros(padded.shape, dtype=np.float32),
+        "morphology": np.zeros((2, *padded.shape), dtype=np.float32),
+        "quantifiability": np.zeros(padded.shape, dtype=np.float32),
+        "centreline": np.zeros(padded.shape, dtype=np.float32),
+    }
+    is_gated = False
+    is_four_class = False
     has_uncertainty = False
     weights = np.zeros(padded.shape, dtype=np.float32)
     window = blend_window(patch_size)
@@ -197,20 +218,78 @@ def run_tiled_inference(
             batch = np.stack([padded[y : y + patch_size, x : x + patch_size] for y, x in batch_starts])
             tensor = torch.from_numpy(batch[:, None].astype(np.float32)).to(device)
             outputs = model(tensor)
-            sem = outputs["semantic_logits"].detach().cpu().numpy()
-            skel = outputs["skeleton_logits"][:, 0].detach().cpu().numpy()
+            gated_batch = "foreground_logits" in outputs
+            is_gated = is_gated or gated_batch
+            if gated_batch:
+                foreground = outputs["foreground_logits"][:, 0].detach().cpu().numpy()
+                morphology = outputs["morphology_logits"].detach().cpu().numpy()
+                quantifiability = outputs["quantifiability_logits"][:, 0].detach().cpu().numpy()
+                centreline = outputs["raw_centreline_logits"][:, 0].detach().cpu().numpy()
+            else:
+                sem = outputs["semantic_logits"].detach().cpu().numpy()
+                four_class_batch = sem.shape[1] == 4
+                is_four_class = is_four_class or four_class_batch
+                if semantic_logits is None:
+                    semantic_logits = np.zeros((sem.shape[1], *padded.shape), dtype=np.float32)
+                elif semantic_logits.shape[0] != sem.shape[1]:
+                    raise ValueError("model changed semantic channel count between tiled batches")
+                centreline = outputs.get("raw_centreline_logits", outputs.get("skeleton_logits"))
+                if centreline is None:
+                    raise KeyError("model output has no centreline or skeleton logits")
+                skel = centreline[:, 0].detach().cpu().numpy()
             uncertain = outputs.get("uncertainty_logits")
             if uncertain is not None:
                 has_uncertainty = True
                 uncertain = uncertain[:, 0].detach().cpu().numpy()
             for i, (y, x) in enumerate(batch_starts):
-                semantic_logits[:, y : y + patch_size, x : x + patch_size] += sem[i] * window
-                skeleton_logits[y : y + patch_size, x : x + patch_size] += skel[i] * window
+                if gated_batch:
+                    gated_logits["foreground"][y:y + patch_size, x:x + patch_size] += foreground[i] * window
+                    gated_logits["morphology"][:, y:y + patch_size, x:x + patch_size] += morphology[i] * window
+                    gated_logits["quantifiability"][y:y + patch_size, x:x + patch_size] += quantifiability[i] * window
+                    gated_logits["centreline"][y:y + patch_size, x:x + patch_size] += centreline[i] * window
+                else:
+                    semantic_logits[:, y : y + patch_size, x : x + patch_size] += sem[i] * window
+                    skeleton_logits[y : y + patch_size, x : x + patch_size] += skel[i] * window
                 if uncertain is not None:
                     uncertainty_logits[y : y + patch_size, x : x + patch_size] += uncertain[i] * window
                 weights[y : y + patch_size, x : x + patch_size] += window
 
     weights = np.maximum(weights, 1e-6)
+    if is_gated:
+        if uncertainty_gating != "none":
+            raise ValueError("gated inference uses its coupled probabilities and does not accept post-hoc uncertainty gating")
+        foreground = sigmoid(gated_logits["foreground"][:h, :w] / weights[:h, :w]).astype(np.float32)
+        morphology = softmax_channel_first(gated_logits["morphology"][:, :h, :w] / weights[:h, :w])
+        quantifiability = sigmoid(gated_logits["quantifiability"][:h, :w] / weights[:h, :w]).astype(np.float32)
+        raw_centreline = sigmoid(gated_logits["centreline"][:h, :w] / weights[:h, :w]).astype(np.float32)
+        background = 1.0 - foreground
+        uncertain = foreground * (1.0 - quantifiability)
+        fibrous = foreground * quantifiability * morphology[0]
+        clump = foreground * quantifiability * morphology[1]
+        skeleton = fibrous * raw_centreline
+        final = np.stack([background, fibrous, clump, uncertain])
+        ids = np.asarray([0, 1, 3, 255], dtype=np.uint8)
+        semantic_class_map = ids[final.argmax(axis=0)]
+        return {
+            "semantic_class_map": semantic_class_map,
+            "foreground_probability": foreground,
+            "quantifiability_probability": quantifiability,
+            "conditional_fibrous_probability": morphology[0].astype(np.float32),
+            "conditional_clump_probability": morphology[1].astype(np.float32),
+            "raw_centreline_probability": raw_centreline,
+            "final_background_probability": background.astype(np.float32),
+            "final_fibrous_probability": fibrous.astype(np.float32),
+            "final_clump_probability": clump.astype(np.float32),
+            "final_uncertain_probability": uncertain.astype(np.float32),
+            "final_skeleton_probability": skeleton.astype(np.float32),
+            "fibrous_probability": fibrous.astype(np.float32),
+            "clump_probability": clump.astype(np.float32),
+            "uncertainty_probability": uncertain.astype(np.float32),
+            "skeleton_probability": skeleton.astype(np.float32),
+            "skeleton_mask_0_5": (skeleton > 0.5).astype(np.uint8),
+            "skeleton_mask_0_75": (skeleton > 0.75).astype(np.uint8),
+        }
+    assert semantic_logits is not None
     semantic_logits = semantic_logits[:, :h, :w] / weights[:h, :w]
     skeleton_logits = skeleton_logits[:h, :w] / weights[:h, :w]
     uncertainty_probability = None
@@ -218,6 +297,25 @@ def run_tiled_inference(
         uncertainty_probability = sigmoid(uncertainty_logits[:h, :w] / weights[:h, :w]).astype(np.float32)
     semantic_prob = softmax_channel_first(semantic_logits)
     skeleton_probability = sigmoid(skeleton_logits).astype(np.float32)
+    if is_four_class:
+        if uncertainty_gating != "none":
+            raise ValueError("four-class inference does not accept post-hoc uncertainty gating")
+        ids = np.asarray([0, 1, 3, 255], dtype=np.uint8)
+        semantic_class_map = ids[semantic_prob.argmax(axis=0)]
+        return {
+            "semantic_class_map": semantic_class_map,
+            "semantic_logits": semantic_logits.astype(np.float32),
+            "raw_centreline_logits": skeleton_logits.astype(np.float32),
+            "four_class_probabilities": semantic_prob.astype(np.float32),
+            "background_probability": semantic_prob[0].astype(np.float32),
+            "fibrous_probability": semantic_prob[1].astype(np.float32),
+            "clump_probability": semantic_prob[2].astype(np.float32),
+            "uncertainty_probability": semantic_prob[3].astype(np.float32),
+            "centreline_probability": skeleton_probability,
+            "skeleton_probability": skeleton_probability,
+            "skeleton_mask_0_5": (skeleton_probability > 0.5).astype(np.uint8),
+            "skeleton_mask_0_75": (skeleton_probability > 0.75).astype(np.uint8),
+        }
     if uncertainty_gating != "none":
         if uncertainty_probability is None:
             raise ValueError("uncertainty gating requires a checkpoint with an uncertainty head")

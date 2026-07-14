@@ -30,6 +30,10 @@ BEST_MODE_AUTO = {
     "semantic_loss": "min",
     "skeleton_loss": "min",
     "uncertainty_loss": "min",
+    "foreground_loss": "min",
+    "gate_loss": "min",
+    "morphology_loss": "min",
+    "joint_loss": "min",
     "fibrous_dice": "max",
     "clump_dice": "max",
     "skeleton_dice": "max",
@@ -57,6 +61,12 @@ class BaselineConfig:
     num_workers: int = 0
     seed: int = 123
     lambda_skeleton: float = 0.5
+    lambda_foreground: float = 1.0
+    lambda_gate: float = 0.5
+    lambda_morphology: float = 1.0
+    lambda_joint: float = 1.0
+    lambda_semantic: float = 1.0
+    lambda_dice: float = 0.0
     learning_rate: float = 1e-3
     patches_per_sample: int = 4
     validation_patches_per_sample: int = 2
@@ -98,6 +108,10 @@ class BaselineConfig:
     real_sampling_weights: str = "fibrous_positive=1,clump_positive=1,uncertain_positive=1,dense_or_fibrous_clump_boundary=1,background_hard_negative=1,uniform_random=1"
     augmentation: bool = False
     command_line_args: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.model_variant in {"gated_context_unet", "four_class_context_unet"}:
+            self.context_module = "aspp"
 
 
 def read_manifest(path: Path) -> list[dict[str, str]]:
@@ -486,12 +500,15 @@ class ContextUNet(nn.Module):
         self.skeleton_head = nn.Conv2d(c, 1, 1)
         self.uncertainty_head = nn.Conv2d(c, 1, 1) if uncertainty_head else None
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+    def decode_features(self, x: torch.Tensor) -> torch.Tensor:
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool(e1))
         e3 = self.context(self.enc3(self.pool(e2)))
         d2 = self.dec2(torch.cat([self.up2(e3), e2], dim=1))
-        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
+        return self.dec1(torch.cat([self.up1(d2), e1], dim=1))
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        d1 = self.decode_features(x)
         outputs = {
             "semantic_logits": self.semantic_head(d1),
             "skeleton_logits": self.skeleton_head(d1),
@@ -499,6 +516,111 @@ class ContextUNet(nn.Module):
         if self.uncertainty_head is not None:
             outputs["uncertainty_logits"] = self.uncertainty_head(d1)
         return outputs
+
+
+class GatedContextUNet(ContextUNet):
+    """Context U-Net with coupled foreground, morphology, and quantifiability heads."""
+
+    def __init__(
+        self,
+        in_channels: int = 1,
+        base_channels: int = 16,
+        context_module: str = "aspp",
+        aspp_dilations: list[int] | None = None,
+    ) -> None:
+        super().__init__(in_channels, base_channels, False, context_module, aspp_dilations)
+        del self.semantic_head, self.skeleton_head, self.uncertainty_head
+        c = base_channels
+        self.foreground_head = nn.Conv2d(c, 1, 1)
+        self.morphology_head = nn.Conv2d(c, 2, 1)
+        self.quantifiability_head = nn.Conv2d(c, 1, 1)
+        self.centreline_head = nn.Conv2d(c, 1, 1)
+        self.initialize_gated_heads()
+
+    def initialize_gated_heads(self) -> None:
+        for head in (
+            self.foreground_head, self.morphology_head,
+            self.quantifiability_head, self.centreline_head,
+        ):
+            head.reset_parameters()
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        features = self.decode_features(x)
+        foreground_logits = self.foreground_head(features)
+        morphology_logits = self.morphology_head(features)
+        quantifiability_logits = self.quantifiability_head(features)
+        centreline_logits = self.centreline_head(features)
+        probabilities = gated_probabilities(
+            foreground_logits, morphology_logits, quantifiability_logits, centreline_logits
+        )
+        return {
+            "foreground_logits": foreground_logits,
+            "morphology_logits": morphology_logits,
+            "quantifiability_logits": quantifiability_logits,
+            "raw_centreline_logits": centreline_logits,
+            **probabilities,
+        }
+
+
+class FourClassContextUNet(ContextUNet):
+    """Context U-Net with direct background, fibre, clump, and uncertain logits."""
+
+    def __init__(
+        self,
+        in_channels: int = 1,
+        base_channels: int = 16,
+        context_module: str = "aspp",
+        aspp_dilations: list[int] | None = None,
+    ) -> None:
+        super().__init__(in_channels, base_channels, False, context_module, aspp_dilations)
+        del self.semantic_head, self.skeleton_head, self.uncertainty_head
+        self.semantic_head = nn.Conv2d(base_channels, 4, 1)
+        self.centreline_head = nn.Conv2d(base_channels, 1, 1)
+        self.initialize_output_heads()
+
+    def initialize_output_heads(self) -> None:
+        self.semantic_head.reset_parameters()
+        self.centreline_head.reset_parameters()
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        features = self.decode_features(x)
+        semantic_logits = self.semantic_head(features)
+        centreline_logits = self.centreline_head(features)
+        return {
+            "semantic_logits": semantic_logits,
+            "raw_centreline_logits": centreline_logits,
+            "semantic_probabilities": torch.softmax(semantic_logits, dim=1),
+            "centreline_probability": torch.sigmoid(centreline_logits),
+        }
+
+
+def gated_probabilities(
+    foreground_logits: torch.Tensor,
+    morphology_logits: torch.Tensor,
+    quantifiability_logits: torch.Tensor,
+    raw_centreline_logits: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    foreground = torch.sigmoid(foreground_logits)
+    morphology = torch.softmax(morphology_logits, dim=1)
+    quantifiability = torch.sigmoid(quantifiability_logits)
+    raw_centreline = torch.sigmoid(raw_centreline_logits)
+    background = 1.0 - foreground
+    uncertain = foreground * (1.0 - quantifiability)
+    fibrous = foreground * quantifiability * morphology[:, 0:1]
+    clump = foreground * quantifiability * morphology[:, 1:2]
+    skeleton = fibrous * raw_centreline
+    return {
+        "foreground_probability": foreground,
+        "quantifiability_probability": quantifiability,
+        "conditional_fibrous_probability": morphology[:, 0:1],
+        "conditional_clump_probability": morphology[:, 1:2],
+        "raw_centreline_probability": raw_centreline,
+        "final_background_probability": background,
+        "final_fibrous_probability": fibrous,
+        "final_clump_probability": clump,
+        "final_uncertain_probability": uncertain,
+        "final_skeleton_probability": skeleton,
+    }
 
 
 def parse_dilations(raw: str) -> list[int]:
@@ -515,6 +637,16 @@ def build_model(config: BaselineConfig) -> nn.Module:
         return ContextUNet(
             uncertainty_head=config.enable_uncertainty_head,
             context_module=config.context_module,
+            aspp_dilations=parse_dilations(config.aspp_dilations),
+        )
+    if config.model_variant == "gated_context_unet":
+        return GatedContextUNet(
+            context_module="aspp",
+            aspp_dilations=parse_dilations(config.aspp_dilations),
+        )
+    if config.model_variant == "four_class_context_unet":
+        return FourClassContextUNet(
+            context_module="aspp",
             aspp_dilations=parse_dilations(config.aspp_dilations),
         )
     raise ValueError(f"unsupported model_variant {config.model_variant!r}")
@@ -535,7 +667,22 @@ def compute_loss(
     rejection_near_distance: float = 20.0,
     lambda_clump_anti_fibrous: float = 0.0,
     lambda_clump_anti_skeleton: float = 0.0,
+    lambda_foreground: float = 1.0,
+    lambda_gate: float = 0.5,
+    lambda_morphology: float = 1.0,
+    lambda_joint: float = 1.0,
+    lambda_semantic: float = 1.0,
+    lambda_dice: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
+    if "foreground_logits" in outputs:
+        return compute_gated_loss(
+            outputs, batch, lambda_foreground, lambda_gate, lambda_morphology,
+            lambda_joint, lambda_skeleton, skeleton_pos_weight, rejection_near_distance,
+        )
+    if outputs["semantic_logits"].shape[1] == 4:
+        return compute_four_class_loss(
+            outputs, batch, lambda_semantic, lambda_dice, lambda_skeleton, skeleton_pos_weight
+        )
     semantic_loss = F.cross_entropy(outputs["semantic_logits"], batch["semantic"], ignore_index=IGNORE_INDEX)
     pos_weight = torch.tensor([skeleton_pos_weight], device=outputs["skeleton_logits"].device)
     skeleton_valid = skeleton_valid_mask(batch, uncertain_skeleton_policy)
@@ -591,6 +738,188 @@ def compute_loss(
         parts["uncertainty_loss"] = float(uncertainty_loss.detach().cpu())
         parts.update(rejection_parts)
     return total, parts
+
+
+def four_class_target(batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Map the legacy internal targets to background/fibre/clump/uncertain indices 0..3."""
+    target = batch["semantic"].clone()
+    uncertain = batch.get("uncertain", torch.zeros_like(batch["skeleton"]))[:, 0] > 0.5
+    target[uncertain] = 3
+    annotated = (batch["semantic"] != IGNORE_INDEX) | uncertain
+    return target, annotated
+
+
+def class_balanced_cross_entropy(
+    logits: torch.Tensor, target: torch.Tensor, annotated: torch.Tensor,
+) -> torch.Tensor:
+    safe_target = torch.where(annotated, target, torch.zeros_like(target))
+    loss_map = F.cross_entropy(logits, safe_target, reduction="none")
+    means = [loss_map[(target == class_index) & annotated].mean()
+             for class_index in range(logits.shape[1])
+             if bool(((target == class_index) & annotated).any())]
+    return torch.stack(means).mean() if means else logits.sum() * 0.0
+
+
+def multiclass_dice_loss(
+    logits: torch.Tensor, target: torch.Tensor, annotated: torch.Tensor, epsilon: float = 1e-6,
+) -> torch.Tensor:
+    probabilities = torch.softmax(logits, dim=1)
+    losses = []
+    for class_index in range(logits.shape[1]):
+        target_class = (target == class_index) & annotated
+        if not bool(target_class.any()):
+            continue
+        probability = probabilities[:, class_index] * annotated.to(probabilities.dtype)
+        numerator = 2.0 * (probability * target_class).sum() + epsilon
+        denominator = probability.sum() + target_class.sum() + epsilon
+        losses.append(1.0 - numerator / denominator)
+    return torch.stack(losses).mean() if losses else logits.sum() * 0.0
+
+
+def compute_four_class_loss(
+    outputs: dict[str, torch.Tensor],
+    batch: dict[str, torch.Tensor],
+    lambda_semantic: float = 1.0,
+    lambda_dice: float = 0.0,
+    lambda_skeleton: float = 0.5,
+    skeleton_pos_weight: float = 8.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    target, annotated = four_class_target(batch)
+    semantic_loss = class_balanced_cross_entropy(outputs["semantic_logits"], target, annotated)
+    dice_loss = multiclass_dice_loss(outputs["semantic_logits"], target, annotated)
+    fibre_valid = (batch["semantic"] == 1).unsqueeze(1)
+    fibre_valid &= batch.get("skeleton_valid", batch["valid"]) > 0.5
+    skeleton_map = F.binary_cross_entropy_with_logits(
+        outputs["raw_centreline_logits"], batch["skeleton"],
+        pos_weight=torch.tensor([skeleton_pos_weight], device=target.device).view(1, 1, 1, 1),
+        reduction="none",
+    )
+    skeleton_loss = masked_mean(skeleton_map, fibre_valid)
+    total = (
+        float(lambda_semantic) * semantic_loss
+        + float(lambda_dice) * dice_loss
+        + float(lambda_skeleton) * skeleton_loss
+    )
+    return total, {
+        "loss": float(total.detach().cpu()),
+        "semantic_loss": float(semantic_loss.detach().cpu()),
+        "dice_loss": float(dice_loss.detach().cpu()),
+        "skeleton_loss": float(skeleton_loss.detach().cpu()),
+        "uncertain_fibrous_loss": 0.0,
+        "clump_anti_fibrous_loss": 0.0,
+        "clump_anti_skeleton_loss": 0.0,
+    }
+
+
+def compute_gated_loss(
+    outputs: dict[str, torch.Tensor],
+    batch: dict[str, torch.Tensor],
+    lambda_foreground: float = 1.0,
+    lambda_gate: float = 0.5,
+    lambda_morphology: float = 1.0,
+    lambda_joint: float = 1.0,
+    lambda_skeleton: float = 0.5,
+    skeleton_pos_weight: float = 8.0,
+    near_distance: float = 20.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    semantic = batch["semantic"]
+    uncertain = batch.get("uncertain", torch.zeros_like(batch["skeleton"]))[:, 0] > 0.5
+    fibrous = semantic == 1
+    clump = semantic == 2
+    confident = fibrous | clump
+    foreground = confident | uncertain
+
+    foreground_loss = F.binary_cross_entropy_with_logits(
+        outputs["foreground_logits"][:, 0], foreground.to(outputs["foreground_logits"].dtype)
+    )
+    gate_loss, gate_parts = stratified_gate_loss(
+        outputs["quantifiability_logits"][:, 0], semantic, uncertain,
+        batch.get("uncertain_distance"), near_distance,
+    )
+    morphology_map = F.cross_entropy(
+        outputs["morphology_logits"], (semantic == 2).long(), reduction="none"
+    )
+    morphology_loss = masked_mean(morphology_map, confident)
+
+    final = torch.cat([
+        outputs["final_background_probability"],
+        outputs["final_fibrous_probability"],
+        outputs["final_clump_probability"],
+        outputs["final_uncertain_probability"],
+    ], dim=1).clamp(min=1e-7, max=1.0)
+    joint_target = torch.zeros_like(semantic)
+    joint_target[fibrous] = 1
+    joint_target[clump] = 2
+    joint_target[uncertain] = 3
+    joint_loss = -torch.log(final.gather(1, joint_target.unsqueeze(1))[:, 0]).mean()
+
+    skeleton_mask = fibrous.unsqueeze(1) & (batch.get("skeleton_valid", batch["valid"]) > 0.5)
+    skeleton_map = F.binary_cross_entropy_with_logits(
+        outputs["raw_centreline_logits"], batch["skeleton"],
+        pos_weight=torch.tensor([skeleton_pos_weight], device=semantic.device).view(1, 1, 1, 1),
+        reduction="none",
+    )
+    skeleton_loss = masked_mean(skeleton_map, skeleton_mask)
+    total = (
+        float(lambda_foreground) * foreground_loss
+        + float(lambda_gate) * gate_loss
+        + float(lambda_morphology) * morphology_loss
+        + float(lambda_joint) * joint_loss
+        + float(lambda_skeleton) * skeleton_loss
+    )
+    parts = {
+        "loss": float(total.detach().cpu()),
+        "foreground_loss": float(foreground_loss.detach().cpu()),
+        "gate_loss": float(gate_loss.detach().cpu()),
+        "morphology_loss": float(morphology_loss.detach().cpu()),
+        "joint_loss": float(joint_loss.detach().cpu()),
+        "skeleton_loss": float(skeleton_loss.detach().cpu()),
+        # Compatibility summary for existing logs and selection code.
+        "semantic_loss": float(joint_loss.detach().cpu()),
+        "uncertain_fibrous_loss": 0.0,
+        "clump_anti_fibrous_loss": 0.0,
+        "clump_anti_skeleton_loss": 0.0,
+        **gate_parts,
+    }
+    return total, parts
+
+
+def stratified_gate_loss(
+    logits: torch.Tensor,
+    semantic: torch.Tensor,
+    uncertain: torch.Tensor,
+    uncertain_distance: torch.Tensor | None = None,
+    near_distance: float = 20.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Average uncertainty and confident-foreground strata without background."""
+    target = ((semantic == 1) | (semantic == 2)).to(logits.dtype)
+    bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    if not bool((((semantic == 1) | (semantic == 2)) | uncertain).any()):
+        return logits.sum() * 0.0, {}
+    near = (
+        uncertain_distance[:, 0] <= float(near_distance)
+        if uncertain_distance is not None else torch.ones_like(uncertain)
+    )
+    strata = {
+        "uncertain": uncertain,
+        "near_fibrous": (semantic == 1) & near,
+        "near_clump": (semantic == 2) & near,
+        "far_fibrous": (semantic == 1) & ~near,
+        "far_clump": (semantic == 2) & ~near,
+    }
+    means = {name: masked_mean_or_none(bce, mask) for name, mask in strata.items()}
+    negative = means["uncertain"]
+    confident_values = [means[name] for name in strata if name != "uncertain" and means[name] is not None]
+    confident_loss = sum(confident_values) / len(confident_values) if confident_values else None
+    loss = weighted_present_mean(
+        {"uncertain": negative, "confident": confident_loss},
+        {"uncertain": 0.5, "confident": 0.5},
+    )
+    parts = {
+        f"gate_{name}_loss": float(value.detach().cpu())
+        for name, value in means.items() if value is not None
+    }
+    return loss, parts
 
 
 def uncertain_fibrous_suppression_loss(
@@ -748,6 +1077,12 @@ def evaluate_model(
     rejection_near_distance: float = 20.0,
     lambda_clump_anti_fibrous: float = 0.0,
     lambda_clump_anti_skeleton: float = 0.0,
+    lambda_foreground: float = 1.0,
+    lambda_gate: float = 0.5,
+    lambda_morphology: float = 1.0,
+    lambda_joint: float = 1.0,
+    lambda_semantic: float = 1.0,
+    lambda_dice: float = 0.0,
 ) -> dict[str, float | str]:
     model.eval()
     losses: list[dict[str, float]] = []
@@ -767,6 +1102,7 @@ def evaluate_model(
         "target_uncertain_ignore": [],
         "target_background": [],
     }
+    gated_moments: dict[str, dict[str, dict[str, float]]] = {}
     threshold_metrics = {threshold: {"dice": [], "precision": [], "recall": []} for threshold in [0.25, 0.5, 0.75, 0.85]}
     clump_target_pixels = 0
     uncertain_target_pixels = 0
@@ -789,26 +1125,48 @@ def evaluate_model(
                 rejection_near_distance,
                 lambda_clump_anti_fibrous,
                 lambda_clump_anti_skeleton,
+                lambda_foreground,
+                lambda_gate,
+                lambda_morphology,
+                lambda_joint,
+                lambda_semantic,
+                lambda_dice,
             )
             losses.append(loss_parts)
-            pred_sem = outputs["semantic_logits"].argmax(dim=1)
+            gated = "foreground_logits" in outputs
+            four_class = not gated and outputs["semantic_logits"].shape[1] == 4
+            if gated:
+                final_semantic = torch.cat([
+                    outputs["final_background_probability"],
+                    outputs["final_fibrous_probability"],
+                    outputs["final_clump_probability"],
+                    outputs["final_uncertain_probability"],
+                ], dim=1)
+                pred_sem = final_semantic.argmax(dim=1)
+            else:
+                pred_sem = outputs["semantic_logits"].argmax(dim=1)
             target_sem = batch["semantic"]
             valid = target_sem != IGNORE_INDEX
             skeleton_valid = batch.get("skeleton_valid", batch["valid"])[:, 0] > 0.5
-            skeleton_prob = torch.sigmoid(outputs["skeleton_logits"][:, 0])
+            skeleton_prob = (
+                outputs["final_skeleton_probability"][:, 0]
+                if gated else outputs["centreline_probability"][:, 0]
+                if four_class else torch.sigmoid(outputs["skeleton_logits"][:, 0])
+            )
             pred_skel = skeleton_prob > skeleton_threshold
             true_skel = batch["skeleton"][:, 0] > 0.5
             uncertain_target = batch.get("uncertain", torch.zeros_like(batch["skeleton"]))
             true_uncertain = uncertain_target[:, 0] > 0.5
             pred_uncertain = (
+                pred_sem == 3 if gated or four_class else
                 torch.sigmoid(outputs["uncertainty_logits"][:, 0]) > 0.5
-                if "uncertainty_logits" in outputs
-                else None
+                if "uncertainty_logits" in outputs else None
             )
             uncertainty_prob = (
+                outputs["final_uncertain_probability"][:, 0] if gated else
+                outputs["semantic_probabilities"][:, 3] if four_class else
                 torch.sigmoid(outputs["uncertainty_logits"][:, 0])
-                if "uncertainty_logits" in outputs
-                else None
+                if "uncertainty_logits" in outputs else None
             )
             for b in range(pred_sem.shape[0]):
                 fib = target_positive_dice(pred_sem[b] == 1, target_sem[b] == 1, valid[b])
@@ -833,6 +1191,10 @@ def evaluate_model(
                         uncertain_recall.append(float(uncertain_tp / true_uncertain_count))
                 if uncertainty_prob is not None:
                     append_region_probabilities(uncertainty_probs, uncertainty_prob[b], target_sem[b], true_uncertain[b])
+                if gated:
+                    append_gated_probability_moments(
+                        gated_moments, outputs, b, target_sem[b], true_uncertain[b]
+                    )
                 skel = target_positive_dice(pred_skel[b], true_skel[b], skeleton_valid[b])
                 if skel is not None:
                     skeleton_dice.append(skel)
@@ -874,6 +1236,7 @@ def evaluate_model(
         "uncertainty_probability_by_target_region": {
             name: probability_summary(values) for name, values in uncertainty_probs.items()
         },
+        "gated_probability_by_target_region": summarize_probability_moments(gated_moments),
         "skeleton_dice": mean_or_na(skeleton_dice),
         "skeleton_precision": mean_or_na(skeleton_precision),
         "skeleton_recall": mean_or_na(skeleton_recall),
@@ -885,8 +1248,13 @@ def evaluate_model(
         "predicted_skeleton_inside_predicted_fibrous_fraction": mean_or_na(pred_inside_pred_fibrous),
         "predicted_skeleton_inside_true_fibrous_fraction": mean_or_na(pred_inside_true_fibrous),
     }
+    if any("dice_loss" in row for row in losses):
+        result["dice_loss"] = mean_metric(losses, "dice_loss")
     if any("uncertainty_loss" in row for row in losses):
         result["uncertainty_loss"] = mean_metric(losses, "uncertainty_loss")
+    for name in ("foreground_loss", "gate_loss", "morphology_loss", "joint_loss"):
+        if any(name in row for row in losses):
+            result[name] = mean_metric(losses, name)
     return result
 
 
@@ -908,6 +1276,52 @@ def append_region_probabilities(
             out[name].extend(values.detach().cpu().float().tolist())
 
 
+def append_gated_probability_moments(
+    out: dict[str, dict[str, dict[str, float]]], outputs: dict[str, torch.Tensor], index: int,
+    target_semantic: torch.Tensor, uncertain: torch.Tensor,
+) -> None:
+    regions = {
+        "target_background": target_semantic == 0,
+        "target_fibrous": target_semantic == 1,
+        "target_clump": target_semantic == 2,
+        "target_uncertain_ignore": uncertain,
+    }
+    names = (
+        "foreground_probability", "quantifiability_probability", "final_background_probability",
+        "final_fibrous_probability", "final_clump_probability", "final_uncertain_probability",
+    )
+    for region, mask in regions.items():
+        if not mask.any():
+            continue
+        for name in names:
+            values = outputs[name][index, 0][mask].detach().double()
+            moments = out.setdefault(region, {}).setdefault(
+                name, {"count": 0.0, "sum": 0.0, "sum_sq": 0.0, "min": 1.0, "max": 0.0}
+            )
+            moments["count"] += values.numel()
+            moments["sum"] += float(values.sum())
+            moments["sum_sq"] += float(values.square().sum())
+            moments["min"] = min(moments["min"], float(values.min()))
+            moments["max"] = max(moments["max"], float(values.max()))
+
+
+def summarize_probability_moments(
+    moments: dict[str, dict[str, dict[str, float]]],
+) -> dict[str, dict[str, dict[str, float]]]:
+    result = {}
+    for region, probabilities in moments.items():
+        result[region] = {}
+        for name, values in probabilities.items():
+            count = values["count"]
+            mean = values["sum"] / count
+            variance = max(values["sum_sq"] / count - mean * mean, 0.0)
+            result[region][name] = {
+                "count": int(count), "mean": mean, "std": math.sqrt(variance),
+                "min": values["min"], "max": values["max"],
+            }
+    return result
+
+
 def evaluate_real_per_image(
     model: nn.Module,
     loader: torch.utils.data.DataLoader,
@@ -922,10 +1336,21 @@ def evaluate_real_per_image(
             parent_ids = list(batch["source_image_id"])
             device_batch = tensor_batch_to_device(batch, device)
             outputs = model(device_batch["image"])
-            pred_semantic = outputs["semantic_logits"].argmax(dim=1).detach().cpu().numpy()
-            pred_skeleton = (
-                torch.sigmoid(outputs["skeleton_logits"][:, 0]) > skeleton_threshold
-            ).detach().cpu().numpy()
+            gated = "foreground_logits" in outputs
+            four_class = not gated and outputs["semantic_logits"].shape[1] == 4
+            if gated:
+                probabilities = torch.cat([
+                    outputs["final_background_probability"], outputs["final_fibrous_probability"],
+                    outputs["final_clump_probability"], outputs["final_uncertain_probability"],
+                ], dim=1)
+                pred_semantic = probabilities.argmax(dim=1).detach().cpu().numpy()
+                pred_skeleton = (outputs["final_skeleton_probability"][:, 0] > skeleton_threshold).cpu().numpy()
+            else:
+                pred_semantic = outputs["semantic_logits"].argmax(dim=1).detach().cpu().numpy()
+                pred_skeleton = (
+                    (outputs["centreline_probability"][:, 0] if four_class else
+                     torch.sigmoid(outputs["skeleton_logits"][:, 0])) > skeleton_threshold
+                ).detach().cpu().numpy()
             target_semantic = batch["semantic"].numpy()
             target_skeleton = batch["skeleton"][:, 0].numpy() > 0.5
             valid = batch["valid"][:, 0].numpy() > 0.5
@@ -1295,8 +1720,10 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
         log_status(
             "loaded initial checkpoint: "
             f"{checkpoint_report['path']} "
-            f"(missing={len(checkpoint_report['missing_keys'])}, "
-            f"unexpected={len(checkpoint_report['unexpected_keys'])})"
+            f"(loaded={len(checkpoint_report['loaded_keys'])}, "
+            f"initialized={len(checkpoint_report.get('initialized_keys', []))}, "
+            f"rejected={len(checkpoint_report.get('rejected_parameters', {}))}, "
+            f"missing_backbone={len(checkpoint_report['missing_backbone_keys'])})"
         )
         metadata["initial_checkpoint"] = checkpoint_report
         save_json(out / "run_metadata.json", metadata)
@@ -1317,7 +1744,11 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
     resumed_stage = resume_payload.get("training_state", {}).get("fine_tuning_stage") if resume_payload else None
     if resume_payload and resume_payload.get("optimizer_state_dict") and resumed_stage == stage:
         optimizer.load_state_dict(resume_payload["optimizer_state_dict"])
-    log_rows: list[dict[str, float | int]] = []
+    log_rows: list[dict[str, float | int | str]] = []
+    existing_log = out / "training_log.csv"
+    if resume_payload is not None and existing_log.exists():
+        with existing_log.open(newline="", encoding="utf-8") as handle:
+            log_rows.extend(csv.DictReader(handle))
     validation_values_by_epoch: dict[str, dict[str, float]] = {}
     resumed_state = resume_payload.get("training_state", {}) if resume_payload else {}
     best_value: float | None = resumed_state.get("best_value")
@@ -1358,6 +1789,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                     config.rejection_near_distance,
                     config.lambda_clump_anti_fibrous,
                     config.lambda_clump_anti_skeleton,
+                    config.lambda_foreground, config.lambda_gate,
+                    config.lambda_morphology, config.lambda_joint,
+                    config.lambda_semantic, config.lambda_dice,
                 )
                 loss.backward()
                 optimizer.step()
@@ -1382,6 +1816,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 config.rejection_near_distance,
                 config.lambda_clump_anti_fibrous,
                 config.lambda_clump_anti_skeleton,
+                config.lambda_foreground, config.lambda_gate,
+                config.lambda_morphology, config.lambda_joint,
+                config.lambda_semantic, config.lambda_dice,
             )
             real_val_metrics = (
                 evaluate_model(
@@ -1401,6 +1838,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                     config.rejection_near_distance,
                     config.lambda_clump_anti_fibrous,
                     config.lambda_clump_anti_skeleton,
+                    config.lambda_foreground, config.lambda_gate,
+                    config.lambda_morphology, config.lambda_joint,
+                    config.lambda_semantic, config.lambda_dice,
                 )
                 if real_val_loader is not None and val_loader is not None
                 else val_metrics if real_val_loader is not None else None
@@ -1418,8 +1858,19 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 "validation_semantic_loss": float(val_metrics["semantic_loss"]),
                 "validation_skeleton_loss": float(val_metrics["skeleton_loss"]),
             }
+            if "dice_loss" in running[0]:
+                row["train_dice_loss"] = mean_metric(running, "dice_loss")
+                row["validation_dice_loss"] = float(val_metrics["dice_loss"])
             if "uncertainty_loss" in running[0]:
                 row["train_uncertainty_loss"] = mean_metric(running, "uncertainty_loss")
+            for name in ("foreground_loss", "gate_loss", "morphology_loss", "joint_loss"):
+                if name in running[0]:
+                    row[f"train_{name}"] = mean_metric(running, name)
+                    row[f"validation_{name}"] = float(val_metrics[name])
+            for region, probabilities in val_metrics.get("gated_probability_by_target_region", {}).items():
+                for probability, summary in probabilities.items():
+                    for statistic in ("mean", "std", "min", "max"):
+                        row[f"validation_{region}_{probability}_{statistic}"] = summary[statistic]
             row["train_clump_anti_fibrous_loss"] = mean_metric(running, "clump_anti_fibrous_loss")
             row["train_clump_anti_skeleton_loss"] = mean_metric(running, "clump_anti_skeleton_loss")
             selection_metrics = real_image_metrics if real_image_metrics is not None else val_metrics
@@ -1479,6 +1930,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                     if isinstance(real_image_metrics[name], (int, float)):
                         row[f"real_validation_{name}"] = float(real_image_metrics[name])
             log_rows.append(row)
+            write_log_csv(existing_log, log_rows)
             print(
                 f"epoch {epoch}: train_loss={row['train_loss']:.4f} "
                 f"validation_loss={row['validation_loss']:.4f}",
@@ -1488,6 +1940,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             if config.early_stop_patience > 0 and warmup_complete and patience_counter >= config.early_stop_patience:
                 stopped_early = True
                 row["stopped_early"] = 1
+                write_log_csv(existing_log, log_rows)
                 early_stop_reason = (
                     f"no improvement in validation {config.best_metric} for "
                     f"{config.early_stop_patience} validation epochs"
@@ -1523,6 +1976,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             config.rejection_near_distance,
             config.lambda_clump_anti_fibrous,
             config.lambda_clump_anti_skeleton,
+            config.lambda_foreground, config.lambda_gate,
+            config.lambda_morphology, config.lambda_joint,
+            config.lambda_semantic, config.lambda_dice,
         )
         real_val_metrics = (
             evaluate_model(
@@ -1542,6 +1998,9 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 config.rejection_near_distance,
                 config.lambda_clump_anti_fibrous,
                 config.lambda_clump_anti_skeleton,
+                config.lambda_foreground, config.lambda_gate,
+                config.lambda_morphology, config.lambda_joint,
+                config.lambda_semantic, config.lambda_dice,
             )
             if real_val_loader is not None and val_loader is not None
             else val_metrics if real_val_loader is not None else None
@@ -1672,11 +2131,45 @@ def load_initial_checkpoint(
     if not isinstance(state, dict):
         raise ValueError(f"{path}: checkpoint does not contain a model state dict")
     state = strip_module_prefix(state)
-    incompatible = model.load_state_dict(state, strict=False)
+    target = model.state_dict()
+    partial_backbone = isinstance(model, (GatedContextUNet, FourClassContextUNet))
+    if not partial_backbone:
+        incompatible = model.load_state_dict(state, strict=False)
+        return {
+            "path": str(path),
+            "loaded_keys": sorted(key for key in state if key in target),
+            "missing_keys": list(incompatible.missing_keys),
+            "unexpected_keys": list(incompatible.unexpected_keys),
+            "incompatible_parameters": {},
+            "initialized_keys": list(incompatible.missing_keys),
+            "rejected_parameters": {},
+            "missing_backbone_keys": [],
+            "checkpoint_config": checkpoint.get("config") if isinstance(checkpoint, dict) else None,
+        }
+    compatible = {key: value for key, value in state.items() if key in target and target[key].shape == value.shape}
+    incompatible_parameters = {
+        key: {
+            "checkpoint_shape": list(value.shape),
+            "model_shape": list(target[key].shape) if key in target else None,
+        }
+        for key, value in state.items()
+        if key not in target or target[key].shape != value.shape
+    }
+    incompatible = model.load_state_dict(compatible, strict=False)
+    backbone_prefixes = ("enc1.", "enc2.", "enc3.", "context.", "up2.", "dec2.", "up1.", "dec1.")
+    missing_backbone = [key for key in incompatible.missing_keys if key.startswith(backbone_prefixes)]
+    if missing_backbone:
+        raise ValueError(f"{path}: partial initialization is missing backbone parameters: {missing_backbone}")
+    initialized = [key for key in incompatible.missing_keys if not key.startswith(backbone_prefixes)]
     return {
         "path": str(path),
+        "loaded_keys": sorted(compatible),
         "missing_keys": list(incompatible.missing_keys),
-        "unexpected_keys": list(incompatible.unexpected_keys),
+        "unexpected_keys": [key for key in state if key not in target],
+        "incompatible_parameters": incompatible_parameters,
+        "initialized_keys": initialized,
+        "rejected_parameters": incompatible_parameters,
+        "missing_backbone_keys": missing_backbone,
         "checkpoint_config": checkpoint.get("config") if isinstance(checkpoint, dict) else None,
     }
 
@@ -1793,12 +2286,18 @@ def dataset_path_info(rows: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def model_config_payload(config: BaselineConfig | None = None) -> dict[str, Any]:
+    gated = config is not None and config.model_variant == "gated_context_unet"
+    four_class = config is not None and config.model_variant == "four_class_context_unet"
     return {
         "architecture": config.model_variant if config is not None else "SmallUNet",
         "in_channels": 1,
         "base_channels": 16,
-        "semantic_classes": 3,
-        "heads": ["semantic", "skeleton", "optional_uncertainty"],
+        "semantic_classes": 4 if gated or four_class else 3,
+        "heads": (
+            ["foreground", "conditional_morphology", "quantifiability", "raw_centreline"]
+            if gated else ["four_class_semantic", "centreline"]
+            if four_class else ["semantic", "skeleton", "optional_uncertainty"]
+        ),
         "context_module": config.context_module if config is not None else "none",
         "aspp_dilations": config.aspp_dilations if config is not None else "",
     }
@@ -1821,6 +2320,7 @@ def wandb_epoch_metrics(
         "epoch": row["epoch"],
         "train/loss": row["train_loss"],
         "train/semantic_loss": row["train_semantic_loss"],
+        "train/dice_loss": loggable_metric(row.get("train_dice_loss")),
         "train/skeleton_loss": row["train_skeleton_loss"],
         "train/uncertainty_loss": loggable_metric(row.get("train_uncertainty_loss")),
         "train/clump_anti_fibrous_loss": loggable_metric(row.get("train_clump_anti_fibrous_loss")),
@@ -1832,6 +2332,7 @@ def wandb_epoch_metrics(
         "best_metric/stopped_early": bool(row.get("stopped_early", 0)),
         "validation/loss": loggable_metric(val_metrics["loss"]),
         "validation/semantic_loss": loggable_metric(val_metrics["semantic_loss"]),
+        "validation/dice_loss": loggable_metric(val_metrics.get("dice_loss")),
         "validation/skeleton_loss": loggable_metric(val_metrics["skeleton_loss"]),
         "validation/uncertainty_loss": loggable_metric(val_metrics.get("uncertainty_loss")),
         "validation/clump_anti_fibrous_loss": loggable_metric(val_metrics.get("clump_anti_fibrous_loss")),
@@ -1856,6 +2357,9 @@ def wandb_epoch_metrics(
     for threshold, threshold_metrics in val_metrics.get("skeleton_metrics_by_threshold", {}).items():
         for name, value in threshold_metrics.items():
             metrics[f"validation/skeleton_threshold_{threshold}/{name}"] = loggable_metric(value)
+    for name in ("foreground_loss", "gate_loss", "morphology_loss", "joint_loss"):
+        metrics[f"train/{name}"] = loggable_metric(row.get(f"train_{name}"))
+        metrics[f"validation/{name}"] = loggable_metric(val_metrics.get(name))
     for region, values in val_metrics.get("uncertainty_probability_by_target_region", {}).items():
         for name, value in values.items():
             metrics[f"validation/uncertainty_probability/{region}/{name}"] = loggable_metric(value)
@@ -1868,6 +2372,7 @@ def prefixed_wandb_metrics(prefix: str, values: dict[str, Any]) -> dict[str, Any
     out = {
         f"{prefix}/loss": loggable_metric(values["loss"]),
         f"{prefix}/semantic_loss": loggable_metric(values["semantic_loss"]),
+        f"{prefix}/dice_loss": loggable_metric(values.get("dice_loss")),
         f"{prefix}/skeleton_loss": loggable_metric(values["skeleton_loss"]),
         f"{prefix}/uncertainty_loss": loggable_metric(values.get("uncertainty_loss")),
         f"{prefix}/clump_anti_fibrous_loss": loggable_metric(values.get("clump_anti_fibrous_loss")),
@@ -1889,6 +2394,8 @@ def prefixed_wandb_metrics(prefix: str, values: dict[str, Any]) -> dict[str, Any
             values["predicted_skeleton_inside_true_fibrous_fraction"]
         ),
     }
+    for name in ("foreground_loss", "gate_loss", "morphology_loss", "joint_loss"):
+        out[f"{prefix}/{name}"] = loggable_metric(values.get(name))
     for threshold, threshold_metrics in values.get("skeleton_metrics_by_threshold", {}).items():
         for name, value in threshold_metrics.items():
             out[f"{prefix}/skeleton_threshold_{threshold}/{name}"] = loggable_metric(value)
@@ -1972,8 +2479,24 @@ def write_qa_panels(
         image = sample["image"].unsqueeze(0).to(device)
         with torch.no_grad():
             outputs = model(image)
-        pred_sem = outputs["semantic_logits"].argmax(dim=1)[0].cpu().numpy().astype(np.int64)
-        pred_skel = (torch.sigmoid(outputs["skeleton_logits"][0, 0]).cpu().numpy() > skeleton_threshold)
+        if "foreground_logits" in outputs:
+            final = torch.cat([
+                outputs["final_background_probability"], outputs["final_fibrous_probability"],
+                outputs["final_clump_probability"], outputs["final_uncertain_probability"],
+            ], dim=1)
+            pred_sem = final.argmax(dim=1)[0].cpu().numpy().astype(np.int64)
+            pred_sem[pred_sem == 3] = IGNORE_INDEX
+            pred_skel = outputs["final_skeleton_probability"][0, 0].cpu().numpy() > skeleton_threshold
+        else:
+            pred_sem = outputs["semantic_logits"].argmax(dim=1)[0].cpu().numpy().astype(np.int64)
+            four_class = outputs["semantic_logits"].shape[1] == 4
+            if four_class:
+                pred_sem[pred_sem == 3] = IGNORE_INDEX
+            skeleton_probability = (
+                outputs["centreline_probability"][0, 0] if four_class
+                else torch.sigmoid(outputs["skeleton_logits"][0, 0])
+            )
+            pred_skel = skeleton_probability.cpu().numpy() > skeleton_threshold
         true_sem = sample["semantic"].numpy().astype(np.int64)
         true_skel = sample["skeleton"][0].numpy() > 0.5
         raw = sample["image"][0].numpy()
