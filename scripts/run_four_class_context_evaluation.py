@@ -139,6 +139,8 @@ def training_command(args: argparse.Namespace, run_dir: Path, fold: int) -> list
         "--seed", "123", "--device", "cuda:0", "--model-variant", "four_class_context_unet",
         "--context-module", "aspp", "--aspp-dilations", "1,2,4,8",
         "--lambda-semantic", "1.0", "--lambda-dice", "0.0", "--lambda-skeleton", "0.5",
+        "--four-class-semantic-loss", "pixel_ce", "--four-class-uncertain-bias", "-6.0",
+        "--four-class-skeleton-mask", "complete",
         "--lambda-uncertainty", "0", "--lambda-uncertain-fibrous", "0",
         "--lambda-clump-anti-fibrous", "0", "--lambda-clump-anti-skeleton", "0",
         "--uncertain-skeleton-policy", "ignore", "--best-metric", "macro_image_fibrous_dice",

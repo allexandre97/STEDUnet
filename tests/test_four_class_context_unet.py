@@ -11,6 +11,7 @@ from fibras.training.schema08_baseline import (
     compute_four_class_loss,
     four_class_target,
     load_initial_checkpoint,
+    pixel_cross_entropy,
 )
 from scripts.evaluate_real_pilot_baseline import load_model, run_tiled_inference, write_outputs
 
@@ -73,11 +74,38 @@ def test_class_balanced_loss_skips_absent_classes():
     torch.testing.assert_close(actual, expected)
 
 
-def test_centreline_loss_ignores_background_clump_and_uncertain():
+def test_complete_centreline_loss_uses_background_and_clump_negatives():
     before = compute_four_class_loss(model_outputs(), training_batch())[1]["skeleton_loss"]
-    changed = torch.tensor([[[[100.0, 0.0, 100.0, 100.0]]]])
+    changed = torch.tensor([[[[100.0, 0.0, 100.0, 0.0]]]])
+    after = compute_four_class_loss(model_outputs(centreline=changed), training_batch())[1]["skeleton_loss"]
+    assert after > before
+
+
+def test_centreline_loss_still_excludes_uncertain_pixels():
+    before = compute_four_class_loss(model_outputs(), training_batch())[1]["skeleton_loss"]
+    changed = torch.tensor([[[[0.0, 0.0, 0.0, 100.0]]]])
     after = compute_four_class_loss(model_outputs(centreline=changed), training_batch())[1]["skeleton_loss"]
     assert after == before
+
+
+def test_legacy_fibre_only_centreline_mask_is_explicit():
+    before = compute_four_class_loss(
+        model_outputs(), training_batch(), skeleton_mask_name="legacy_fibre_only"
+    )[1]["skeleton_loss"]
+    changed = torch.tensor([[[[100.0, 0.0, 100.0, 0.0]]]])
+    after = compute_four_class_loss(
+        model_outputs(centreline=changed), training_batch(), skeleton_mask_name="legacy_fibre_only"
+    )[1]["skeleton_loss"]
+    assert after == before
+
+
+def test_pixel_cross_entropy_matches_manual_calculation():
+    logits = torch.tensor([[[[2.0, 0.0]], [[0.0, 3.0]], [[-1.0, 1.0]], [[0.5, -2.0]]]])
+    target = torch.tensor([[[0, 1]]])
+    annotated = torch.ones_like(target, dtype=torch.bool)
+    actual = pixel_cross_entropy(logits, target, annotated)
+    expected = -(torch.log_softmax(logits, dim=1)[0, 0, 0, 0] + torch.log_softmax(logits, dim=1)[0, 1, 0, 1]) / 2
+    torch.testing.assert_close(actual, expected)
 
 
 def test_cpu_one_batch_forward_backward_has_finite_gradients():
@@ -102,7 +130,7 @@ def test_cpu_one_batch_forward_backward_has_finite_gradients():
                for parameter in model.parameters())
 
 
-def test_context_checkpoint_partially_initializes_backbone_and_reports_heads(tmp_path):
+def test_context_checkpoint_copies_semantic_channels_and_skeleton_head(tmp_path):
     source = ContextUNet(base_channels=4, context_module="aspp", aspp_dilations=[1, 2])
     path = tmp_path / "context.pt"
     torch.save({"model_state_dict": source.state_dict()}, path)
@@ -111,11 +139,23 @@ def test_context_checkpoint_partially_initializes_backbone_and_reports_heads(tmp
     for name, value in source.state_dict().items():
         if name.startswith(("enc", "context.", "up", "dec")):
             torch.testing.assert_close(target.state_dict()[name], value)
-    assert report["missing_backbone_keys"] == []
-    assert set(report["initialized_keys"]) == {
-        "semantic_head.weight", "semantic_head.bias", "centreline_head.weight", "centreline_head.bias"
-    }
-    assert {"semantic_head.weight", "semantic_head.bias", "skeleton_head.weight", "skeleton_head.bias"} <= set(report["rejected_parameters"])
+    torch.testing.assert_close(target.semantic_head.weight[:3], source.semantic_head.weight)
+    torch.testing.assert_close(target.semantic_head.bias[:3], source.semantic_head.bias)
+    torch.testing.assert_close(target.centreline_head.weight, source.skeleton_head.weight)
+    torch.testing.assert_close(target.centreline_head.bias, source.skeleton_head.bias)
+    assert report["warm_start_kind"] == "legacy_context_unet_to_four_class"
+    assert report["missing_inherited_keys"] == []
+
+
+def test_context_checkpoint_initializes_uncertain_channel_conservatively(tmp_path):
+    source = ContextUNet(base_channels=4, context_module="aspp", aspp_dilations=[1, 2])
+    path = tmp_path / "context.pt"
+    torch.save({"model_state_dict": source.state_dict()}, path)
+    target = FourClassContextUNet(base_channels=4, aspp_dilations=[1, 2])
+    report = load_initial_checkpoint(target, str(path), torch.device("cpu"), four_class_uncertain_bias=-7.5)
+    torch.testing.assert_close(target.semantic_head.weight[3], torch.zeros_like(target.semantic_head.weight[3]))
+    torch.testing.assert_close(target.semantic_head.bias[3], torch.tensor(-7.5))
+    assert set(report["initialized_keys"]) == {"semantic_head.weight[3]", "semantic_head.bias[3]"}
 
 
 def test_partial_initialization_fails_when_backbone_is_missing(tmp_path):
@@ -124,7 +164,19 @@ def test_partial_initialization_fails_when_backbone_is_missing(tmp_path):
     del state["enc1.net.0.weight"]
     path = tmp_path / "broken.pt"
     torch.save({"model_state_dict": state}, path)
-    with pytest.raises(ValueError, match="missing backbone"):
+    with pytest.raises(ValueError, match="missing or incompatible inherited"):
+        load_initial_checkpoint(
+            FourClassContextUNet(base_channels=4, aspp_dilations=[1, 2]), str(path), torch.device("cpu")
+        )
+
+
+def test_partial_initialization_fails_when_semantic_head_is_incompatible(tmp_path):
+    source = ContextUNet(base_channels=4, context_module="aspp", aspp_dilations=[1, 2])
+    state = source.state_dict()
+    state["semantic_head.weight"] = state["semantic_head.weight"][:2]
+    path = tmp_path / "broken.pt"
+    torch.save({"model_state_dict": state}, path)
+    with pytest.raises(ValueError, match="semantic_head.weight"):
         load_initial_checkpoint(
             FourClassContextUNet(base_channels=4, aspp_dilations=[1, 2]), str(path), torch.device("cpu")
         )
@@ -140,6 +192,17 @@ def test_exact_four_class_checkpoint_reload(tmp_path):
     loaded, _, _ = load_model(path, None, "cpu", torch)
     for name, value in source.state_dict().items():
         torch.testing.assert_close(loaded.state_dict()[name], value)
+
+
+def test_native_four_class_initial_checkpoint_loads_exactly(tmp_path):
+    source = FourClassContextUNet(base_channels=4, aspp_dilations=[1, 2])
+    path = tmp_path / "four_class.pt"
+    torch.save({"model_state_dict": source.state_dict()}, path)
+    target = FourClassContextUNet(base_channels=4, aspp_dilations=[1, 2])
+    report = load_initial_checkpoint(target, str(path), torch.device("cpu"))
+    for name, value in source.state_dict().items():
+        torch.testing.assert_close(target.state_dict()[name], value)
+    assert report["warm_start_kind"] == "native_four_class"
 
 
 def test_tiled_inference_blends_logits_and_preserves_all_maps(tmp_path):
@@ -184,7 +247,9 @@ def test_training_cli_exposes_four_class_weights_and_forces_aspp():
         "--manifest", "manifest.csv", "--out", "run",
         "--model-variant", "four_class_context_unet",
         "--lambda-semantic", "1.2", "--lambda-dice", "0.3", "--lambda-skeleton", "0.4",
+        "--four-class-semantic-loss", "pixel_ce",
     ])
     config = config_from_args(args)
     assert (config.lambda_semantic, config.lambda_dice, config.lambda_skeleton) == (1.2, 0.3, 0.4)
+    assert config.four_class_semantic_loss == "pixel_ce"
     assert config.context_module == "aspp"

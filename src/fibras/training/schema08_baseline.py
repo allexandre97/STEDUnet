@@ -67,6 +67,9 @@ class BaselineConfig:
     lambda_joint: float = 1.0
     lambda_semantic: float = 1.0
     lambda_dice: float = 0.0
+    four_class_semantic_loss: str = "pixel_ce"
+    four_class_uncertain_bias: float = -6.0
+    four_class_skeleton_mask: str = "complete"
     learning_rate: float = 1e-3
     patches_per_sample: int = 4
     validation_patches_per_sample: int = 2
@@ -673,6 +676,8 @@ def compute_loss(
     lambda_joint: float = 1.0,
     lambda_semantic: float = 1.0,
     lambda_dice: float = 0.0,
+    four_class_semantic_loss: str = "pixel_ce",
+    four_class_skeleton_mask: str = "complete",
 ) -> tuple[torch.Tensor, dict[str, float]]:
     if "foreground_logits" in outputs:
         return compute_gated_loss(
@@ -681,7 +686,8 @@ def compute_loss(
         )
     if outputs["semantic_logits"].shape[1] == 4:
         return compute_four_class_loss(
-            outputs, batch, lambda_semantic, lambda_dice, lambda_skeleton, skeleton_pos_weight
+            outputs, batch, lambda_semantic, lambda_dice, lambda_skeleton,
+            skeleton_pos_weight, four_class_semantic_loss, four_class_skeleton_mask,
         )
     semantic_loss = F.cross_entropy(outputs["semantic_logits"], batch["semantic"], ignore_index=IGNORE_INDEX)
     pos_weight = torch.tensor([skeleton_pos_weight], device=outputs["skeleton_logits"].device)
@@ -760,6 +766,12 @@ def class_balanced_cross_entropy(
     return torch.stack(means).mean() if means else logits.sum() * 0.0
 
 
+def pixel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, annotated: torch.Tensor) -> torch.Tensor:
+    safe_target = torch.where(annotated, target, torch.zeros_like(target))
+    loss_map = F.cross_entropy(logits, safe_target, reduction="none")
+    return masked_mean(loss_map, annotated)
+
+
 def multiclass_dice_loss(
     logits: torch.Tensor, target: torch.Tensor, annotated: torch.Tensor, epsilon: float = 1e-6,
 ) -> torch.Tensor:
@@ -783,18 +795,32 @@ def compute_four_class_loss(
     lambda_dice: float = 0.0,
     lambda_skeleton: float = 0.5,
     skeleton_pos_weight: float = 8.0,
+    semantic_loss_name: str = "pixel_ce",
+    skeleton_mask_name: str = "complete",
 ) -> tuple[torch.Tensor, dict[str, float]]:
     target, annotated = four_class_target(batch)
-    semantic_loss = class_balanced_cross_entropy(outputs["semantic_logits"], target, annotated)
+    if semantic_loss_name == "pixel_ce":
+        semantic_loss = pixel_cross_entropy(outputs["semantic_logits"], target, annotated)
+    elif semantic_loss_name == "class_balanced_ce":
+        semantic_loss = class_balanced_cross_entropy(outputs["semantic_logits"], target, annotated)
+    else:
+        raise ValueError(f"unsupported four_class_semantic_loss {semantic_loss_name!r}")
     dice_loss = multiclass_dice_loss(outputs["semantic_logits"], target, annotated)
-    fibre_valid = (batch["semantic"] == 1).unsqueeze(1)
-    fibre_valid &= batch.get("skeleton_valid", batch["valid"]) > 0.5
+    if skeleton_mask_name == "complete":
+        skeleton_valid = batch.get("skeleton_valid", batch["valid"]) > 0.5
+    elif skeleton_mask_name == "legacy_fibre_only":
+        skeleton_valid = (batch["semantic"] == 1).unsqueeze(1)
+        skeleton_valid &= batch.get("skeleton_valid", batch["valid"]) > 0.5
+    else:
+        raise ValueError(f"unsupported four_class_skeleton_mask {skeleton_mask_name!r}")
     skeleton_map = F.binary_cross_entropy_with_logits(
         outputs["raw_centreline_logits"], batch["skeleton"],
         pos_weight=torch.tensor([skeleton_pos_weight], device=target.device).view(1, 1, 1, 1),
         reduction="none",
     )
-    skeleton_loss = masked_mean(skeleton_map, fibre_valid)
+    skeleton_loss = masked_mean(skeleton_map, skeleton_valid)
+    semantic_parts = semantic_diagnostics(outputs["semantic_logits"], target, annotated)
+    skeleton_parts = skeleton_diagnostics(batch["skeleton"] > 0.5, skeleton_valid)
     total = (
         float(lambda_semantic) * semantic_loss
         + float(lambda_dice) * dice_loss
@@ -808,6 +834,39 @@ def compute_four_class_loss(
         "uncertain_fibrous_loss": 0.0,
         "clump_anti_fibrous_loss": 0.0,
         "clump_anti_skeleton_loss": 0.0,
+        **semantic_parts,
+        **skeleton_parts,
+    }
+
+
+def semantic_diagnostics(
+    logits: torch.Tensor, target: torch.Tensor, annotated: torch.Tensor,
+) -> dict[str, float]:
+    names = ("background", "fibre", "clump", "uncertain")
+    probabilities = torch.softmax(logits.detach(), dim=1)
+    pred = probabilities.argmax(dim=1)
+    total = annotated.sum().clamp_min(1)
+    parts = {}
+    safe_target = torch.where(annotated, target, torch.zeros_like(target))
+    loss_map = F.cross_entropy(logits.detach(), safe_target, reduction="none")
+    for class_index, name in enumerate(names):
+        target_mask = (target == class_index) & annotated
+        parts[f"semantic_{name}_target_fraction"] = float(target_mask.sum().cpu() / total.cpu())
+        parts[f"semantic_{name}_predicted_fraction"] = float(((pred == class_index) & annotated).sum().cpu() / total.cpu())
+        parts[f"semantic_{name}_loss"] = (
+            float(loss_map[target_mask].mean().cpu()) if bool(target_mask.any()) else float("nan")
+        )
+    return parts
+
+
+def skeleton_diagnostics(target: torch.Tensor, valid: torch.Tensor) -> dict[str, float]:
+    positive = target & valid
+    negative = (~target) & valid
+    ignored = ~valid
+    return {
+        "skeleton_positive_pixels": float(positive.sum().detach().cpu()),
+        "skeleton_negative_pixels": float(negative.sum().detach().cpu()),
+        "skeleton_ignored_pixels": float(ignored.sum().detach().cpu()),
     }
 
 
@@ -1083,6 +1142,8 @@ def evaluate_model(
     lambda_joint: float = 1.0,
     lambda_semantic: float = 1.0,
     lambda_dice: float = 0.0,
+    four_class_semantic_loss: str = "pixel_ce",
+    four_class_skeleton_mask: str = "complete",
 ) -> dict[str, float | str]:
     model.eval()
     losses: list[dict[str, float]] = []
@@ -1131,6 +1192,8 @@ def evaluate_model(
                 lambda_joint,
                 lambda_semantic,
                 lambda_dice,
+                four_class_semantic_loss,
+                four_class_skeleton_mask,
             )
             losses.append(loss_parts)
             gated = "foreground_logits" in outputs
@@ -1715,7 +1778,10 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
         )
     model = build_model(config).to(device)
     resume_payload = load_resume_checkpoint(model, config.resume_checkpoint, device) if config.resume_checkpoint else None
-    checkpoint_report = load_initial_checkpoint(model, config.init_checkpoint, device) if resume_payload is None else None
+    checkpoint_report = (
+        load_initial_checkpoint(model, config.init_checkpoint, device, config.four_class_uncertain_bias)
+        if resume_payload is None else None
+    )
     if checkpoint_report is not None:
         log_status(
             "loaded initial checkpoint: "
@@ -1792,6 +1858,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                     config.lambda_foreground, config.lambda_gate,
                     config.lambda_morphology, config.lambda_joint,
                     config.lambda_semantic, config.lambda_dice,
+                    config.four_class_semantic_loss, config.four_class_skeleton_mask,
                 )
                 loss.backward()
                 optimizer.step()
@@ -1819,6 +1886,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 config.lambda_foreground, config.lambda_gate,
                 config.lambda_morphology, config.lambda_joint,
                 config.lambda_semantic, config.lambda_dice,
+                config.four_class_semantic_loss, config.four_class_skeleton_mask,
             )
             real_val_metrics = (
                 evaluate_model(
@@ -1841,6 +1909,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                     config.lambda_foreground, config.lambda_gate,
                     config.lambda_morphology, config.lambda_joint,
                     config.lambda_semantic, config.lambda_dice,
+                    config.four_class_semantic_loss, config.four_class_skeleton_mask,
                 )
                 if real_val_loader is not None and val_loader is not None
                 else val_metrics if real_val_loader is not None else None
@@ -1873,6 +1942,11 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                         row[f"validation_{region}_{probability}_{statistic}"] = summary[statistic]
             row["train_clump_anti_fibrous_loss"] = mean_metric(running, "clump_anti_fibrous_loss")
             row["train_clump_anti_skeleton_loss"] = mean_metric(running, "clump_anti_skeleton_loss")
+            for name in running[0]:
+                if name.startswith(("semantic_", "skeleton_positive_", "skeleton_negative_", "skeleton_ignored_")):
+                    row[f"train_{name}"] = mean_metric(running, name)
+                    if name in val_metrics:
+                        row[f"validation_{name}"] = float(val_metrics[name])
             selection_metrics = real_image_metrics if real_image_metrics is not None else val_metrics
             current_value = selected_validation_metric(selection_metrics, config.best_metric)
             final_epoch = epoch
@@ -1979,6 +2053,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
             config.lambda_foreground, config.lambda_gate,
             config.lambda_morphology, config.lambda_joint,
             config.lambda_semantic, config.lambda_dice,
+            config.four_class_semantic_loss, config.four_class_skeleton_mask,
         )
         real_val_metrics = (
             evaluate_model(
@@ -2001,6 +2076,7 @@ def train_baseline(config: BaselineConfig, tracker: Any | None = None) -> dict[s
                 config.lambda_foreground, config.lambda_gate,
                 config.lambda_morphology, config.lambda_joint,
                 config.lambda_semantic, config.lambda_dice,
+                config.four_class_semantic_loss, config.four_class_skeleton_mask,
             )
             if real_val_loader is not None and val_loader is not None
             else val_metrics if real_val_loader is not None else None
@@ -2120,6 +2196,7 @@ def load_initial_checkpoint(
     model: nn.Module,
     checkpoint_path: str | None,
     device: torch.device,
+    four_class_uncertain_bias: float = -6.0,
 ) -> dict[str, Any] | None:
     if checkpoint_path is None:
         return None
@@ -2132,6 +2209,10 @@ def load_initial_checkpoint(
         raise ValueError(f"{path}: checkpoint does not contain a model state dict")
     state = strip_module_prefix(state)
     target = model.state_dict()
+    if isinstance(model, FourClassContextUNet):
+        return load_four_class_initial_checkpoint(
+            model, state, checkpoint, path, float(four_class_uncertain_bias)
+        )
     partial_backbone = isinstance(model, (GatedContextUNet, FourClassContextUNet))
     if not partial_backbone:
         incompatible = model.load_state_dict(state, strict=False)
@@ -2171,6 +2252,114 @@ def load_initial_checkpoint(
         "rejected_parameters": incompatible_parameters,
         "missing_backbone_keys": missing_backbone,
         "checkpoint_config": checkpoint.get("config") if isinstance(checkpoint, dict) else None,
+    }
+
+
+def load_four_class_initial_checkpoint(
+    model: FourClassContextUNet,
+    state: dict[str, torch.Tensor],
+    checkpoint: Any,
+    path: Path,
+    uncertain_bias: float,
+) -> dict[str, Any]:
+    target = model.state_dict()
+    checkpoint_config = checkpoint.get("config") if isinstance(checkpoint, dict) else None
+    native_missing = [key for key in target if key not in state or state[key].shape != target[key].shape]
+    if not native_missing:
+        model.load_state_dict({key: state[key] for key in target}, strict=True)
+        return {
+            "path": str(path),
+            "loaded_keys": sorted(target),
+            "copied_keys": sorted(target),
+            "initialized_keys": [],
+            "missing_keys": [],
+            "unexpected_keys": [key for key in state if key not in target],
+            "incompatible_parameters": incompatible_parameters(state, target),
+            "rejected_parameters": incompatible_parameters(state, target),
+            "missing_backbone_keys": [],
+            "missing_inherited_keys": [],
+            "checkpoint_config": checkpoint_config,
+            "warm_start_kind": "native_four_class",
+        }
+
+    backbone_prefixes = ("enc1.", "enc2.", "enc3.", "context.", "up2.", "dec2.", "up1.", "dec1.")
+    required = [key for key in target if key.startswith(backbone_prefixes)]
+    required += ["semantic_head.weight", "semantic_head.bias", "skeleton_head.weight", "skeleton_head.bias"]
+    problems = {
+        key: {
+            "checkpoint_shape": list(state[key].shape) if key in state else None,
+            "expected_shape": legacy_four_class_expected_shape(key, target),
+        }
+        for key in required
+        if key not in state or list(state[key].shape) != legacy_four_class_expected_shape(key, target)
+    }
+    if problems:
+        raise ValueError(f"{path}: missing or incompatible inherited four-class warm-start tensors: {problems}")
+
+    new_state = {key: value.detach().clone() for key, value in target.items()}
+    copied = []
+    for key in target:
+        if key.startswith(backbone_prefixes):
+            new_state[key] = state[key].detach().clone()
+            copied.append(key)
+    new_state["semantic_head.weight"][:3] = state["semantic_head.weight"].detach()
+    new_state["semantic_head.bias"][:3] = state["semantic_head.bias"].detach()
+    new_state["centreline_head.weight"] = state["skeleton_head.weight"].detach().clone()
+    new_state["centreline_head.bias"] = state["skeleton_head.bias"].detach().clone()
+    new_state["semantic_head.weight"][3].zero_()
+    new_state["semantic_head.bias"][3].fill_(uncertain_bias)
+    copied += [
+        "semantic_head.weight[0:3]", "semantic_head.bias[0:3]",
+        "skeleton_head.weight->centreline_head.weight",
+        "skeleton_head.bias->centreline_head.bias",
+    ]
+    initialized = ["semantic_head.weight[3]", "semantic_head.bias[3]"]
+    model.load_state_dict(new_state, strict=True)
+    rejected = {
+        key: {"checkpoint_shape": list(value.shape), "model_shape": list(target[key].shape) if key in target else None}
+        for key, value in state.items()
+        if key not in required
+        and not (key in target and key.startswith(backbone_prefixes))
+    }
+    return {
+        "path": str(path),
+        "loaded_keys": sorted(key for key in state if key in target and key.startswith(backbone_prefixes)),
+        "copied_keys": sorted(copied),
+        "initialized_keys": initialized,
+        "missing_keys": [],
+        "unexpected_keys": [key for key in state if key not in target],
+        "incompatible_parameters": incompatible_parameters(state, target),
+        "rejected_parameters": rejected,
+        "missing_backbone_keys": [],
+        "missing_inherited_keys": [],
+        "checkpoint_config": checkpoint_config,
+        "warm_start_kind": "legacy_context_unet_to_four_class",
+        "four_class_uncertain_bias": uncertain_bias,
+    }
+
+
+def legacy_four_class_expected_shape(key: str, target: dict[str, torch.Tensor]) -> list[int]:
+    if key == "semantic_head.weight":
+        return [3, *list(target[key].shape[1:])]
+    if key == "semantic_head.bias":
+        return [3]
+    if key == "skeleton_head.weight":
+        return list(target["centreline_head.weight"].shape)
+    if key == "skeleton_head.bias":
+        return list(target["centreline_head.bias"].shape)
+    return list(target[key].shape)
+
+
+def incompatible_parameters(
+    state: dict[str, torch.Tensor], target: dict[str, torch.Tensor],
+) -> dict[str, dict[str, list[int] | None]]:
+    return {
+        key: {
+            "checkpoint_shape": list(value.shape),
+            "model_shape": list(target[key].shape) if key in target else None,
+        }
+        for key, value in state.items()
+        if key not in target or target[key].shape != value.shape
     }
 
 

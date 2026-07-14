@@ -27,6 +27,8 @@ def test_four_class_training_command_uses_direct_four_class_configuration():
     assert "--lambda-semantic 1.0" in joined
     assert "--lambda-dice 0.0" in joined
     assert "--lambda-skeleton 0.5" in joined
+    assert "--four-class-semantic-loss pixel_ce" in joined
+    assert "--four-class-skeleton-mask complete" in joined
     assert "--device cuda:0" in joined
     assert "--seed 123" in joined
     assert "--save-checkpoint-every 1" in joined

@@ -123,6 +123,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-joint", type=float, default=1.0)
     parser.add_argument("--lambda-semantic", type=float, default=1.0)
     parser.add_argument("--lambda-dice", type=float, default=0.0)
+    parser.add_argument(
+        "--four-class-semantic-loss",
+        choices=["pixel_ce", "class_balanced_ce"],
+        default="pixel_ce",
+    )
+    parser.add_argument("--four-class-uncertain-bias", type=float, default=-6.0)
+    parser.add_argument(
+        "--four-class-skeleton-mask",
+        choices=["complete", "legacy_fibre_only"],
+        default="complete",
+    )
     parser.add_argument("--learning-rate", "--learning_rate", dest="learning_rate", type=float, default=1e-3)
     parser.add_argument("--patches-per-sample", "--patches_per_sample", dest="patches_per_sample", type=int, default=4)
     parser.add_argument(
@@ -274,6 +285,9 @@ def config_from_args(args: argparse.Namespace) -> BaselineConfig:
         lambda_joint=args.lambda_joint,
         lambda_semantic=args.lambda_semantic,
         lambda_dice=args.lambda_dice,
+        four_class_semantic_loss=args.four_class_semantic_loss,
+        four_class_uncertain_bias=args.four_class_uncertain_bias,
+        four_class_skeleton_mask=args.four_class_skeleton_mask,
         learning_rate=args.learning_rate,
         patches_per_sample=args.patches_per_sample,
         validation_patches_per_sample=args.validation_patches_per_sample,
